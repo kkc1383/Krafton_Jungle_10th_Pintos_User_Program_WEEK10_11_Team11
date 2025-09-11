@@ -46,13 +46,18 @@ fi
 
 declare -A config_args   # 실행 인자
 declare -A config_result # 결과 파일 경로
+trim() {
+  # 앞뒤 공백 제거
+  echo "$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+}
 tests=()
 
 while IFS=':' read -r test args result_dir; do
   [[ -z "${test// /}" || "${test// /}" == \#* ]] && continue
-  test="$(echo "$test" | xargs)"
-  args="$(echo "$args" | xargs)"
-  result_dir="$(echo "$result_dir" | xargs)"
+  test="$(trim "$test")"
+  args="$(trim "$args")"
+  result_dir="$(trim "$result_dir")"
+  [[ -z "$test" ]] && continue   # ← 빈 key 방지
   config_result["$test"]="$result_dir"
   config_args["$test"]="$args"
   tests+=("$test")
