@@ -17,6 +17,8 @@
         "synch.h": "c",
         "flags.h": "c",
         "fixed-point.h": "c",
-        "tests.h": "c"
+        "tests.h": "c",
+        "boundary.h": "c",
+        "*.inc": "c"
     }
 }
