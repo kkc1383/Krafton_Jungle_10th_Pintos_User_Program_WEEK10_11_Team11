@@ -30,6 +30,8 @@ typedef int tid_t;
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
 
+#define tid_entry(TID, STRUCT, MEMBER) ((STRUCT *)((uint8_t *)&TID - offsetof(STRUCT, MEMBER)))
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -160,6 +162,7 @@ void do_iret(struct intr_frame *tf);
 
 struct list *get_ready_list(void);
 struct list *get_sleep_list(void);
+struct list *get_all_list(void);
 
 void thread_update_all_priority(void);
 void mlfqs_update_priority(struct thread *t);
