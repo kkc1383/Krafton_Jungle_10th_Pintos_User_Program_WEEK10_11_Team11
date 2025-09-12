@@ -233,7 +233,7 @@ strtok_r (char *s, const char *delimiters, char **save_ptr) {
 		/* strchr() will always return nonnull if we're searching
 		   for a null byte, because every string contains a null
 		   byte (at the end). */
-		if (*s == '\0') {
+		if (*s == '\0') {	
 			*save_ptr = s;
 			return NULL;
 		}
