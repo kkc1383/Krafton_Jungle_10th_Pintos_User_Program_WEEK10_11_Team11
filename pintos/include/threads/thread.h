@@ -105,6 +105,9 @@ struct thread {
   struct lock *waiting_for_lock; /* 내가 기다리고 있는 락 */
   int is_donated;                /* 현재 우선순위가 기부받고 있는 상황인지 */
 
+  // struct list children;
+  // struct child_process *self_cp;
+
   /* mlfqs 전용*/
   int nice;           /* CPU를 양보하는 척도 (-20~20) */
   fixed_t recent_cpu; /* 최근 CPU 사용량 (fixed-point)*/
