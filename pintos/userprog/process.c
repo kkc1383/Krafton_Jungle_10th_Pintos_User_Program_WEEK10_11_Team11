@@ -40,21 +40,23 @@ static void process_init(void) { struct thread *current = thread_current(); }
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t process_create_initd(const char *file_name) {
   char *fn_copy;
+  char *fn;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
    * Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
   if (fn_copy == NULL) return TID_ERROR;
+  fn = palloc_get_page(0);  //파일이름 받아오기 용
+  if (fn == NULL) return TID_ERROR;
+
   strlcpy(fn_copy, file_name, PGSIZE);
+  strlcpy(fn, file_name, PGSIZE);
 
-  char *file_end = strchr(file_name, ' ');
-  *file_end = '\0';
+  char *file_end = strchr(fn, ' ');  // file_name은 그대로두고 fn_copy를 건드림
+  if (file_end) *file_end = '\0';
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
-  struct thread *t = tid_entry(tid, struct thread, tid);
-  printf("===================\n%s\n====================\n", t->name);
-
+  tid = thread_create(fn, PRI_DEFAULT, initd, fn_copy);
   if (tid == TID_ERROR) palloc_free_page(fn_copy);
   return tid;
 }
@@ -161,13 +163,13 @@ int process_exec(void *f_name) {
   for (token = strtok_r(f_name, " ", &save_ptr); token != NULL;
        token = strtok_r(NULL, " ", &save_ptr)) {
     argv[i++] = token;
-    printf("argv[%d] : '%s'\n", i - 1, argv[i - 1]);
+    // printf("argv[%d] : '%s'\n", i - 1, argv[i - 1]);
   }
   argv[i] = NULL;
 
   /* argument parsing end */
   char *file_name = argv[0];
-  printf("file_name : %s\n", file_name);
+  // printf("file_name : %s\n", file_name);
   bool success;
 
   /* We cannot use the intr_frame in the thread structure.
@@ -203,22 +205,53 @@ int process_exec(void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int process_wait(tid_t child_tid UNUSED) {
-  struct thread *t = tid_entry(child_tid, struct thread, tid);
-  printf("===================\n%s\n====================\n", t->name);
-  //현재쓰레드로 자식쓰레드 찾기
   /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
-  return -1;
+  struct thread *curr = thread_current();
+  struct child_info *target_child = NULL;
+
+  /* child_tid로 기다릴 child 스레드 찾기 */
+  lock_acquire(&curr->children_lock);  // child_list 순회하니까
+  struct list_elem *e;
+  for (e = list_begin(&curr->child_list); e != list_end(&curr->child_list); e = list_next(e)) {
+    struct child_info *child = list_entry(e, struct child_info, child_elem);
+    if (child->child_tid == child_tid) {  // tid로 기다리려는 자식 찾기
+      target_child = child;
+      break;
+    }
+  }
+  lock_release(&curr->children_lock);
+
+  if (!target_child) return -1;
+  sema_down(&target_child->wait_sema);
+  return target_child->exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void) {
-  struct thread *curr = thread_current();
   /* TODO: Your code goes here.
    * TODO: Implement process termination message (see
    * TODO: project2/process_termination.html).
    * TODO: We recommend you to implement process resource cleanup here. */
+
+  struct thread *curr = thread_current();
+  struct thread *parent = thread_get_by_tid(curr->parent_tid);
+  if (!parent) return;
+
+  lock_acquire(&parent->children_lock);  // child_list 순회하기 때문에
+  // tid로 child_info list에서 본인 노드 찾기
+  struct list_elem *e;
+  for (e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(e)) {
+    struct child_info *child = list_entry(e, struct child_info, child_elem);
+    if (child->child_tid == curr->tid) {  // 본인노드 찾아서 semaup 하기
+      child->exit_status = curr->status;
+      child->has_exited = true;
+      sema_up(&child->wait_sema);
+      break;
+    }
+  }
+  lock_release(&parent->children_lock);  // child_list 순회하기 때문에
 
   process_cleanup();
 }
@@ -416,9 +449,11 @@ static bool load(const char **argv, struct intr_frame *if_) {
   if_->R.rdi = argc;  // rdi에 argc 값 넣기
   // argc + 1(널) + 인자 문자열들이 필요한 8byte짜리 칸 갯수 + return address 이게 홀수면 padding이
   // 필요함
-  bool is_need_8byte = ((argc + 1 + ((str_len + 7) / 8) + 1) % 2);
-
-  char **moved_argv_ptr = malloc(argc * sizeof(char *));
+  int need_8byte = argc + 1 + ((str_len + 7) / 8) + 1;
+  bool is_need_8byte = need_8byte % 2;
+  need_8byte += is_need_8byte;
+  char **moved_argv_ptr = (char **)palloc_get_page(0);
+  if (moved_argv_ptr == NULL) goto done;
   for (int i = argc - 1; i >= 0; i--) {  //실제 인자 문자열을 넣는 동작
     int length = strlen(argv[i]) + 1;    // 메모리에 집어 넣을 문자열 길이
     if_->rsp = memcpy(if_->rsp - length, argv[i], length);  // rsp-length부터 값 집어넣기
@@ -435,9 +470,8 @@ static bool load(const char **argv, struct intr_frame *if_) {
   if_->R.rsi = if_->rsp;                  // rsi에 스택포인터 주소 집어넣기
   if_->rsp = memset(if_->rsp - 8, 0, 8);  // return address
 
-  printf("the rsi(argv) is : %p\n", if_->R.rsi);
-  printf("the rdi(argc) is : %llu\n", if_->R.rdi);
-  hex_dump(USER_STACK - 64, (void *)if_->rsp, 64, true);
+  // hex_dump(if_->rsp, (void *)if_->rsp, need_8byte * 8, true);
+  palloc_free_page(moved_argv_ptr);
   success = true;
 
 done:

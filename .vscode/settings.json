@@ -21,6 +21,12 @@
         "boundary.h": "c",
         "*.inc": "c",
         "gdt.h": "c",
-        "syscall.h": "c"
+        "syscall.h": "c",
+        "exception": "c",
+        "memory_resource": "c",
+        "iosfwd": "c",
+        "new": "c",
+        "ostream": "c",
+        "streambuf": "c"
     }
 }

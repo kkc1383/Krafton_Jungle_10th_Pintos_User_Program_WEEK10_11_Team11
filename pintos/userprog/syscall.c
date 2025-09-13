@@ -12,7 +12,8 @@
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
-
+static void system_write(int fd, const void *buffer, unsigned size);
+static void system_exit(int status);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -37,8 +38,32 @@ void syscall_init(void) {
 }
 
 /* The main system call interface */
+// rdi, rsi, rdx, r10, r8, r9
 void syscall_handler(struct intr_frame *f UNUSED) {
   // TODO: Your implementation goes here.
-  printf("system call!\n");
+  // printf("system call!");
+  switch (f->R.rax) {
+    case SYS_WRITE:
+      // printf(" write! \n");
+      system_write(f->R.rdi, f->R.rsi, f->R.rdx);
+      break;
+    case SYS_EXIT:
+      // printf(" exit! \n");
+      system_exit(f->R.rdi);
+      break;
+    default:
+      // printf("unknown! %d\n", f->R.rax);
+      thread_exit();
+      break;
+  }
+}
+static void system_write(int fd, const void *buffer, unsigned size) {
+  //일단 무조건 표춘출력이라는 가정 하, 나중에 file system때는 다를듯
+  putbuf(buffer, size);
+}
+
+static void system_exit(int status) {
+  // status를 어떻게 써야할지 모르겠다.
+  printf("%s: exit(%d)\n", thread_current()->name, status);
   thread_exit();
 }
