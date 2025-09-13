@@ -3,7 +3,6 @@
 
 #include "../syscall-nr.h"
 
-
 __attribute__((always_inline)) static __inline int64_t syscall(uint64_t num_, uint64_t a1_,
                                                                uint64_t a2_, uint64_t a3_,
                                                                uint64_t a4_, uint64_t a5_,
@@ -60,7 +59,6 @@ void halt(void) {
 }
 
 void exit(int status) {
-  printf("exited!\n");
   syscall1(SYS_EXIT, status);
   NOT_REACHED();
 }
