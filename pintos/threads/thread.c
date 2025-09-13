@@ -131,6 +131,10 @@ void thread_init(void) {
   initial_thread->tid = allocate_tid();
   list_push_front(&all_list, &initial_thread->all_elem);
 
+  /* userprog 추가 초기화 함수들 */
+  list_init(&initial_thread->child_list);
+  lock_init(&initial_thread->children_lock);
+
   if (thread_mlfqs) {
     mlfqs_update_priority(initial_thread);  // 첫 main쓰레드 priority 설정(PRI_MAX)
 
@@ -213,8 +217,23 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   tid = t->tid = allocate_tid();
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
 
+  /* userprog 추가 child_info 초기화 */
+  struct thread *parent = thread_current();
+  struct child_info *child = malloc(sizeof(struct child_info));
+  if (child != NULL) {
+    child->child_tid = tid;
+    child->exit_status = -1;
+    child->has_exited = false;
+    sema_init(&child->wait_sema, 0);
+
+    lock_acquire(&parent->children_lock);
+    list_push_back(&parent->child_list, &child->child_elem);
+    lock_release(&parent->children_lock);
+  }
+  t->parent_tid = parent->tid;  // 부모 tid 설정
+
   if (thread_mlfqs) {  // mlfqs일 경우
-    struct thread *parent = thread_current();
+    // struct thread *parent = thread_current();
     // 부모 쓰레드의 nice, recent_cpu 물려받기
     if (parent != NULL) {
       t->nice = parent->nice;
@@ -813,3 +832,12 @@ int max_priority_mlfqs_queue(
 }
 
 bool is_not_idle(struct thread *t) { return t != idle_thread; }
+
+struct thread *thread_get_by_tid(tid_t tid) {
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, all_elem);
+    if (t->tid == tid) return t;
+  }
+  return NULL;
+}
