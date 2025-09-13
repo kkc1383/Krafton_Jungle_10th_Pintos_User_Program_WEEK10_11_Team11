@@ -19,6 +19,7 @@
         "fixed-point.h": "c",
         "tests.h": "c",
         "string": "c",
-        "string_view": "c"
+        "string_view": "c",
+        "syscall.h": "c"
     }
 }

@@ -48,25 +48,38 @@ tid_t process_create_initd(const char *file_name) {
   if (fn_copy == NULL) return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
-  if (tid == TID_ERROR) palloc_free_page(fn_copy);
+  // 자식 프로세스 생성
+  struct child_process *cp = malloc(sizeof(struct child_process));
+  cp->tid = tid;
+  cp->is_exited = false;
+  cp->is_waited = false;
+  sema_init(&cp->wait_sema, 0);
+  list_push_back(&thread_current()->children, &cp->elem);
 
-  // struct child_process *cp = palloc_get_page(0);
-  // cp->tid = tid;
-  // cp->is_exited = false;
-  // cp->is_waited = false;
-  // sema_init(&cp->wait_sema,0);
-  // list_push_back(&thread_current()->children,&cp->elem);
+  struct initd_aux *aux = malloc(sizeof *aux);
+  aux->file_name = fn_copy;
+  aux->cp = cp;
+
+  /* Create a new thread to execute FILE_NAME. */
+  tid = thread_create(file_name, PRI_DEFAULT, initd, aux);
+  if (tid == TID_ERROR) {
+    palloc_free_page(fn_copy);
+  }
 
   return tid;
 }
 
 /* A thread function that launches first user process. */
-static void initd(void *f_name) {
+static void initd(void *aux) {
 #ifdef VM
   supplemental_page_table_init(&thread_current()->spt);
 #endif
+
+  // 현재 스레드와 부모 스레드 연결
+  struct thread *curr = thread_current();
+  struct initd_aux *ia = aux;
+  void *f_name = ia->file_name;
+  curr->self_cp = ia->cp;
 
   process_init();
 
@@ -195,11 +208,24 @@ int process_wait(tid_t child_tid UNUSED) {
   /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
-  // struct thread *curr = thread_current();
-  // struct list_elem *e;
 
-  while (1) {
+  // 자식 스레드 찾기
+  struct thread *main_t = thread_current();
+  struct list_elem *e;
+  struct child_process *cp;
+  for (e = list_begin(&main_t->children); e != list_end(&main_t->children); e = list_next(e)) {
+    cp = list_entry(e, struct child_process, elem);
+    if (cp->tid == child_tid) {
+      break;
+    }
   }
+
+  if (cp == NULL) {
+    return -1;
+  }
+
+  sema_down(&cp->wait_sema);
+  list_remove(&cp->elem);
 
   return -1;
 }
@@ -207,6 +233,7 @@ int process_wait(tid_t child_tid UNUSED) {
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void) {
   struct thread *curr = thread_current();
+  sema_up(&curr->self_cp->wait_sema);
   /* TODO: Your code goes here.
    * TODO: Implement process termination message (see
    * TODO: project2/process_termination.html).
@@ -341,6 +368,7 @@ static bool load(const char *file_name, struct intr_frame *if_) {
     printf("load: %s: open failed\n", file_name);
     goto done;
   }
+  free(open_file_name);
 
   /* Read and verify executable header. */
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr || memcmp(ehdr.e_ident, "\177ELF\2\1\1", 7) ||
@@ -451,7 +479,7 @@ static bool load(const char *file_name, struct intr_frame *if_) {
   //유저스택 최상단을 가르키는 포인터: RSP
   if_->rsp = rsp;
 
-  hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
+  //hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
   free(arguments);
 
   /* Start address. */
