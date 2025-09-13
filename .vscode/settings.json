@@ -27,6 +27,8 @@
         "iosfwd": "c",
         "new": "c",
         "ostream": "c",
-        "streambuf": "c"
+        "streambuf": "c",
+        "syscall-nr.h": "c",
+        "process.h": "c"
     }
 }

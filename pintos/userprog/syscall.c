@@ -9,11 +9,25 @@
 #include "threads/loader.h"
 #include "threads/thread.h"
 #include "userprog/gdt.h"
+#include "userprog/process.h"
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
-static void system_write(int fd, const void *buffer, unsigned size);
+static void system_halt(void);
 static void system_exit(int status);
+static pid_t system_fork(const char *thread_name);
+static int system_exec(const char *cmdd_line);
+static int system_wait(pid_t pid);
+static bool system_create(const char *file, unsigned initial_size);
+static bool system_remove(const char *file);
+static int system_open(const char *file);
+static int system_filesize(int fd);
+static int system_read(int fd, void *buffer, unsigned size);
+static void system_write(int fd, const void *buffer, unsigned size);
+static void system_seek(int fd, unsigned position);
+static unsigned system_tell(int fd);
+static void system_close(int fd);
+
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -41,29 +55,73 @@ void syscall_init(void) {
 // rdi, rsi, rdx, r10, r8, r9
 void syscall_handler(struct intr_frame *f UNUSED) {
   // TODO: Your implementation goes here.
-  // printf("system call!");
   switch (f->R.rax) {
-    case SYS_WRITE:
-      // printf(" write! \n");
-      system_write(f->R.rdi, f->R.rsi, f->R.rdx);
+    case SYS_HALT:
+      system_halt();
       break;
     case SYS_EXIT:
-      // printf(" exit! \n");
       system_exit(f->R.rdi);
       break;
+    case SYS_FORK:
+      system_fork(f->R.rdi);
+      break;
+    case SYS_EXEC:
+      system_exec(f->R.rdi);
+      break;
+    case SYS_WAIT:
+      system_wait(f->R.rdi);
+      break;
+    case SYS_CREATE:
+      system_create(f->R.rdi, f->R.rsi);
+      break;
+    case SYS_REMOVE:
+      system_remove(f->R.rdi);
+      break;
+    case SYS_OPEN:
+      system_open(f->R.rdi);
+      break;
+    case SYS_FILESIZE:
+      system_filesize(f->R.rdi);
+      break;
+    case SYS_READ:
+      system_read(f->R.rdi, f->R.rsi, f->R.rdx);
+      break;
+    case SYS_WRITE:
+      system_write(f->R.rdi, f->R.rsi, f->R.rdx);
+      break;
+    case SYS_SEEK:
+      system_seek(f->R.rdi, f->R.rsi);
+      break;
+    case SYS_TELL:
+      system_tell(f->R.rdi);
+      break;
+    case SYS_CLOSE:
+      system_close(f->R.rdi);
+      break;
     default:
-      // printf("unknown! %d\n", f->R.rax);
+      printf("unknown! %d\n", f->R.rax);
       thread_exit();
       break;
   }
 }
+
+static void system_halt(void) { power_off(); }
+static void system_exit(int status) {
+  printf("%s: exit(%d)\n", thread_current()->name, status);
+  thread_exit();
+}
+static pid_t system_fork(const char *thread_name) { ; }
+static int system_exec(const char *cmdd_line) { ; }
+static int system_wait(pid_t pid) { ; }
+static bool system_create(const char *file, unsigned initial_size) { ; }
+static bool system_remove(const char *file) { ; }
+static int system_open(const char *file) { ; }
+static int system_filesize(int fd) { ; }
+static int system_read(int fd, void *buffer, unsigned size) { ; }
 static void system_write(int fd, const void *buffer, unsigned size) {
   //일단 무조건 표춘출력이라는 가정 하, 나중에 file system때는 다를듯
   putbuf(buffer, size);
 }
-
-static void system_exit(int status) {
-  // status를 어떻게 써야할지 모르겠다.
-  printf("%s: exit(%d)\n", thread_current()->name, status);
-  thread_exit();
-}
+static void system_seek(int fd, unsigned position) { ; }
+static unsigned system_tell(int fd) { ; }
+static void system_close(int fd) { ; }
