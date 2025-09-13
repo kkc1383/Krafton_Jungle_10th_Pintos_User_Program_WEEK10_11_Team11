@@ -32,3 +32,4 @@ core
 .test_status
 
 .devcontainer/
+.vscode/

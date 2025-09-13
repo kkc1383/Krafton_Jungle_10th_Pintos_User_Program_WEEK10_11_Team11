@@ -13,7 +13,8 @@ struct child_process {
     struct list_elem elem;
 };
 
-struct initd_aux {
+struct passing_argments {
+    char *full_args;
     char *file_name;
     struct child_process *cp;
 };

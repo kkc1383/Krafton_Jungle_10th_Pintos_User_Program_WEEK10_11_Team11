@@ -26,9 +26,10 @@
 #endif
 
 static void process_cleanup(void);
-static bool load(const char *file_name, struct intr_frame *if_);
+static bool load(const struct passing_argments *pargs, struct intr_frame *if_);
 static void initd(void *f_name);
 static void __do_fork(void *);
+void argument_passing(const char *args, struct intr_frame *if_);
 
 /* General process initializer for initd and other process. */
 static void process_init(void) { struct thread *current = thread_current(); }
@@ -39,16 +40,15 @@ static void process_init(void) { struct thread *current = thread_current(); }
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t process_create_initd(const char *file_name) {
-  char *fn_copy;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
-   * Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page(0);
-  if (fn_copy == NULL) return TID_ERROR;
-  strlcpy(fn_copy, file_name, PGSIZE);
+  /* 인자전달 구조체 메모리 할당 */
+  struct passing_argments *pargs = malloc(sizeof(struct passing_argments));
+  pargs->full_args = malloc(strlen(file_name) + 1);
+  pargs->file_name = malloc(strlen(file_name) + 1);
+  pargs->cp = malloc(sizeof(struct child_process));
 
-  // 자식 프로세스 생성
+  /* 자식 프로세스 생성 */
   struct child_process *cp = malloc(sizeof(struct child_process));
   cp->tid = tid;
   cp->is_exited = false;
@@ -56,14 +56,23 @@ tid_t process_create_initd(const char *file_name) {
   sema_init(&cp->wait_sema, 0);
   list_push_back(&thread_current()->children, &cp->elem);
 
-  struct initd_aux *aux = malloc(sizeof *aux);
-  aux->file_name = fn_copy;
-  aux->cp = cp;
+  pargs->full_args = file_name;
+  pargs->cp = cp;
+
+  int len = strlen(file_name) + 1;
+  memcpy(pargs->file_name, file_name, len);
+  char *space = strchr(pargs->file_name, ' ');
+  if (space) {
+    *space = '\0';
+  }
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, initd, aux);
+  tid = thread_create(pargs->file_name, PRI_DEFAULT, initd, pargs);
   if (tid == TID_ERROR) {
-    palloc_free_page(fn_copy);
+    free(pargs->full_args);
+    free(pargs->file_name);
+    free(pargs->cp);
+    free(pargs);
   }
 
   return tid;
@@ -77,13 +86,12 @@ static void initd(void *aux) {
 
   // 현재 스레드와 부모 스레드 연결
   struct thread *curr = thread_current();
-  struct initd_aux *ia = aux;
-  void *f_name = ia->file_name;
-  curr->self_cp = ia->cp;
+  struct passing_argments *pargs = aux;
+  curr->self_cp = pargs->cp;
 
   process_init();
 
-  if (process_exec(f_name) < 0) PANIC("Fail to launch initd\n");
+  if (process_exec(pargs) < 0) PANIC("Fail to launch initd\n");
   NOT_REACHED();
 }
 
@@ -168,10 +176,8 @@ error:
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
-int process_exec(void *f_name) {
-  char *file_name = f_name;
+int process_exec(void *pargs) {
   bool success;
-
   /* We cannot use the intr_frame in the thread structure.
    * This is because when current thread rescheduled,
    * it stores the execution information to the member. */
@@ -184,10 +190,9 @@ int process_exec(void *f_name) {
   process_cleanup();
 
   /* And then load the binary */
-  success = load(file_name, &_if);
+  success = load(pargs, &_if);
 
   /* If load failed, quit. */
-  palloc_free_page(file_name);
   if (!success) return -1;
 
   /* Start switched process. */
@@ -340,13 +345,14 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t 
  * Stores the executable's entry point into *RIP
  * and its initial stack pointer into *RSP.
  * Returns true if successful, false otherwise. */
-static bool load(const char *file_name, struct intr_frame *if_) {
+static bool load(const struct passing_argments *pargs, struct intr_frame *if_) {
   struct thread *t = thread_current();
   struct ELF ehdr;
   struct file *file = NULL;
   off_t file_ofs;
   bool success = false;
   int i;
+  struct passing_argments *pa = pargs;
 
   /* Allocate and activate page directory. */
   t->pml4 = pml4_create();
@@ -354,27 +360,18 @@ static bool load(const char *file_name, struct intr_frame *if_) {
   process_activate(thread_current());
 
   /* Open executable file. */
-  int len = strlen(file_name) + 1;
-  char *open_file_name = malloc(len);
-  memcpy(open_file_name, file_name, len);
 
-  char *space = strchr(open_file_name, ' ');
-  if (space) {
-    *space = '\0';
-  }
-
-  file = filesys_open(open_file_name);
+  file = filesys_open(pa->file_name);
   if (file == NULL) {
-    printf("load: %s: open failed\n", file_name);
+    printf("load: %s: open failed\n", pa->file_name);
     goto done;
   }
-  free(open_file_name);
 
   /* Read and verify executable header. */
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr || memcmp(ehdr.e_ident, "\177ELF\2\1\1", 7) ||
       ehdr.e_type != 2 || ehdr.e_machine != 0x3E  // amd64
       || ehdr.e_version != 1 || ehdr.e_phentsize != sizeof(struct Phdr) || ehdr.e_phnum > 1024) {
-    printf("load: %s: error loading executable\n", file_name);
+    printf("load: %s: error loading executable\n", pa->file_name);
     goto done;
   }
 
@@ -430,12 +427,25 @@ static bool load(const char *file_name, struct intr_frame *if_) {
 
   /* TODO: Your code goes here.
    * TODO: Implement argument passing (see project2/argument_passing.html). */
+  argument_passing(pa->full_args, if_);
+
+  /* Start address. */
+  if_->rip = ehdr.e_entry;
+  success = true;
+
+done:
+  /* We arrive here whether the load is successful or not. */
+  file_close(file);
+  return success;
+}
+
+void argument_passing(const char *args, struct intr_frame *if_) {
   char *token, *save_ptr;
   int argc = 0;
   char *argv[32];
-
-  char *arguments = malloc(len);
-  memcpy(arguments, file_name, len);
+  int args_len = strlen(args) + 1;
+  char *arguments = malloc(args_len);
+  memcpy(arguments, args, args_len);
 
   for (token = strtok_r(arguments, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
     argv[argc++] = token;
@@ -479,17 +489,8 @@ static bool load(const char *file_name, struct intr_frame *if_) {
   //유저스택 최상단을 가르키는 포인터: RSP
   if_->rsp = rsp;
 
-  //hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
+  // hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
   free(arguments);
-
-  /* Start address. */
-  if_->rip = ehdr.e_entry;
-  success = true;
-
-done:
-  /* We arrive here whether the load is successful or not. */
-  file_close(file);
-  return success;
 }
 
 /* Checks whether PHDR describes a valid, loadable segment in

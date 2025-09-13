@@ -3,13 +3,14 @@
 #include <stdio.h>
 #include <syscall-nr.h>
 
-#include "threads/init.h"
 #include "intrinsic.h"
 #include "threads/flags.h"
+#include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/loader.h"
 #include "threads/thread.h"
 #include "userprog/gdt.h"
+
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
@@ -100,16 +101,7 @@ void syscall_handler(struct intr_frame *f UNUSED) {
 void sys_halt() { power_off(); }
 void sys_exit(int status) {
   struct thread *t = thread_current();
-
-  int len = strlen(t->name) + 1;
-  char *file_name = malloc(len);
-  memcpy(file_name, t->name, len);
-  char *space = strchr(file_name, ' ');
-  if (space) {
-    *space = '\0';
-  }
-  printf("%s: exit(%d)\n", file_name, status);
-  free(file_name);
+  printf("%s: exit(%d)\n", t->name, status);
   thread_exit();
 }
 void sys_fork() {}
