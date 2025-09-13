@@ -7,6 +7,7 @@
 
 #include "threads/fixed-point.h"
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -29,6 +30,19 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
+
+
+/* 자식 상태 */
+struct child_status {
+  tid_t tid;
+  int exit_code;            // 자식 종료 코드
+  bool exited;              // 종료 여부
+  bool waited;              // 부모의 wait() 호출 여부
+  int ref_cnt;              // parent + child = 2 로 시작, 소유 카운트, 동기화용
+  struct semaphore sema;    // parent가 wait()에서 대기, 부모 wait일시 down, 자식 exit시 up
+  struct list_elem elem;    // parent->children 에 매달림, 부모의 children list 용
+};
+
 
 /* A kernel thread or user process.
  *
@@ -90,6 +104,10 @@ typedef int tid_t;
 struct thread {
   /* Owned by thread.c. */
   tid_t tid;                 /* Thread identifier. */
+
+  struct list children;            // struct child_status 노드들의 리스트
+  struct child_status *my_status;  // 내가 종료시 업데이트할 내 노드
+
   enum thread_status status; /* Thread state. */
   char name[16];             /* Name (for debugging purposes). */
   int priority;              /* Priority. */
@@ -108,6 +126,9 @@ struct thread {
   /* mlfqs 전용*/
   int nice;           /* CPU를 양보하는 척도 (-20~20) */
   fixed_t recent_cpu; /* 최근 CPU 사용량 (fixed-point)*/
+
+  int exit_status;  /* 상태 */
+  bool proc_inited;  /* init 한번만 하려고 */
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */

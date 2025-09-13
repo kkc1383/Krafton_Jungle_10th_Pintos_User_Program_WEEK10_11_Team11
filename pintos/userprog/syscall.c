@@ -8,8 +8,23 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
+
+/* f->R. 뭐시기 하며 하면 자꾸 실수해서 바꿈 */
+#define SC_NO(f)   ((f)->R.rax)
+#define ARG0(f)    ((f)->R.rdi)
+#define ARG1(f)    ((f)->R.rsi)
+#define ARG2(f)    ((f)->R.rdx)
+#define ARG3(f)    ((f)->R.r10)   /* 4th is r10 */
+#define ARG4(f)    ((f)->R.r8)
+#define ARG5(f)    ((f)->R.r9)
+#define RETVAL(f)  ((f)->R.rax)
+
+/* 프로토 타입 */
+static void sys_exit (int status) NO_RETURN;
+static long sys_write (int fd, const void *buf, unsigned size);
 
 /* System call.
  *
@@ -57,6 +72,39 @@ void
 syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
 	// TODO: 구현을 이곳에 작성하라.
-	printf ("system call!\n");
-	thread_exit ();
+	switch (SC_NO(f))
+	{
+	case SYS_EXIT: {
+		int status = (int) ARG0(f);
+		sys_exit(status);
+		__builtin_unreachable();
+	}
+	case SYS_WRITE: {
+		int fd = (int)ARG0(f);
+		const void *buf = (const void *)ARG1(f);
+		unsigned size = (unsigned)ARG2(f);
+		RETVAL(f) = sys_write(fd, buf, size);
+		break;
+	}
+	default:
+		sys_exit(-1);
+	}
+}
+
+static void
+sys_exit (int status) {
+	struct thread *cur = thread_current();
+	cur->exit_status = status;
+	thread_exit();
+	__builtin_unreachable();
+}
+
+static long
+sys_write (int fd, const void *buf, unsigned size) {
+  if (fd == 1) {              // STDOUT만 지원
+    if (buf == NULL) return -1;
+    putbuf(buf, size);        // 콘솔로 바로 출력
+    return (long)size;
+  }
+  return -1;                  // 나머지는 아직 미지원
 }

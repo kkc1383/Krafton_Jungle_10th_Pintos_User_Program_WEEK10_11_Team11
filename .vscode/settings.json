@@ -18,7 +18,15 @@
         "flags.h": "c",
         "fixed-point.h": "c",
         "tests.h": "c",
-        "syscall.h": "c"
+        "syscall.h": "c",
+        "loader.h": "c",
+        "interrupt.h": "c",
+        "stdlib.h": "c",
+        "malloc.h": "c",
+        "console.h": "c",
+        "stdio.h": "c",
+        "intrinsic.h": "c",
+        "gdt.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }
