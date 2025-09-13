@@ -400,9 +400,6 @@ static bool load(const char *file_name, struct intr_frame *if_) {
   /* Set up stack. */
   if (!setup_stack(if_)) goto done;
 
-  /* Start address. */
-  if_->rip = ehdr.e_entry;
-
   /* TODO: Your code goes here.
    * TODO: Implement argument passing (see project2/argument_passing.html). */
   char *token, *save_ptr;
@@ -431,31 +428,34 @@ static bool load(const char *file_name, struct intr_frame *if_) {
 
   // 배열 마지막 칸
   rsp -= 8;
-  *(char **)rsp = 0;
+  memset((void *)rsp, 0, 8);
 
   for (int i = argc - 1; i >= 0; i--) {
     rsp -= 8;
-    *(char **)rsp = arg_addr[i];
+    memcpy((void *)rsp, &arg_addr[i], 8);
   }
   char **argv_start = (char **)rsp;
 
   rsp -= 8;
-  *(char **)rsp = 0;
+  memset((void *)rsp, 0, 8);
 
   //레지스터 채우기
   if_->R.rdi = argc;
   if_->R.rsi = (uint64_t)argv_start;
 
-  // 16바이트 정렬 맞추기
+  // rsp 16바이트 정렬 맞추기
   if (rsp % 16 != 0) {
     rsp -= 8;
-    *(char **)rsp = 0;
+    memset((void *)rsp, 0, 8);
   }
   //유저스택 최상단을 가르키는 포인터: RSP
   if_->rsp = rsp;
 
   hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
+  free(arguments);
 
+  /* Start address. */
+  if_->rip = ehdr.e_entry;
   success = true;
 
 done:
