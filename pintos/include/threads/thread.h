@@ -30,6 +30,7 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
+#define MAX_FILES 64   /* max number of file descriptors in fd_table */
 
 /* A kernel thread or user process.
  *
@@ -114,6 +115,9 @@ struct thread {
   struct list child_list;     // child_info 의 리스트
   struct lock children_lock;  // children list 순회할때 race condition 막기 위해
   tid_t parent_tid;           // 내 부모의 tid
+
+  /* filesys 용 */
+  struct file *fd_table[MAX_FILES]; /* 파일 디스크립터 테이블, 0,1은 이미 예약 */
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */

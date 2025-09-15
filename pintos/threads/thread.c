@@ -135,6 +135,9 @@ void thread_init(void) {
   list_init(&initial_thread->child_list);
   lock_init(&initial_thread->children_lock);
 
+  /* fd_table 초기화 */
+  memset(initial_thread->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
+
   if (thread_mlfqs) {
     mlfqs_update_priority(initial_thread);  // 첫 main쓰레드 priority 설정(PRI_MAX)
 
@@ -230,6 +233,10 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     list_push_back(&parent->child_list, &child->child_elem);
     lock_release(&parent->children_lock);
   }
+  /* userprog 추가 초기화 함수들 */
+  list_init(&t->child_list);
+  lock_init(&t->children_lock);
+
   t->parent_tid = parent->tid;  // 부모 tid 설정
 
   if (thread_mlfqs) {  // mlfqs일 경우
@@ -241,6 +248,8 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     }
     mlfqs_update_priority(t);  // priority 공식으로 계산
   }
+  memset(t->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
+  // fd 복제는 file_duplicate에서 진행
 
   /* Call the kernel_thread if it scheduled.
    * Note) rdi is 1st argument, and rsi is 2nd argument. */
