@@ -2,18 +2,8 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
-#include "threads/synch.h"
 
-struct child_process {
-    tid_t tid;
-    int exit_status;
-    bool is_exited;
-    bool is_waited;
-    struct semaphore wait_sema;
-    struct list_elem elem;
-};
-
-struct passing_argments {
+struct passing_arguments {
     char *full_args;
     char *file_name;
     struct child_process *cp;

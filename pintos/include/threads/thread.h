@@ -7,6 +7,7 @@
 
 #include "threads/fixed-point.h"
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -29,6 +30,8 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
+#define PD_MAX 64
+#define MIN_FD 2
 
 /* A kernel thread or user process.
  *
@@ -109,12 +112,18 @@ struct thread {
   int nice;           /* CPU를 양보하는 척도 (-20~20) */
   fixed_t recent_cpu; /* 최근 CPU 사용량 (fixed-point)*/
 
+  /* 자식프로세스 관리 */
   struct list children;
   struct child_process *self_cp;
+
+  /* 파일디스크립터 테이블 */
+  struct file *fd_table[PD_MAX];
+  int next_fd;  
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
+
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */
@@ -124,6 +133,14 @@ struct thread {
   /* Owned by thread.c. */
   struct intr_frame tf; /* Information for switching */
   unsigned magic;       /* Detects stack overflow. */
+};
+
+/* 자식 프로세스 구조체 */
+struct child_process {
+  tid_t tid;
+  int exit_status;
+  struct semaphore wait_sema;
+  struct list_elem elem;
 };
 
 /* If false (default), use round-robin scheduler.

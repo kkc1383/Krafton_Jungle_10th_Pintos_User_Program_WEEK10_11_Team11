@@ -199,7 +199,9 @@ void thread_print_stats(void) {
    Priority scheduling is the goal of Problem 1-3. */
 tid_t thread_create(const char *name, int priority, thread_func *function, void *aux) {
   struct thread *t;
+  struct thread *parent = thread_current();
   tid_t tid;
+  struct child_process *cp;
 
   ASSERT(function != NULL);
 
@@ -213,7 +215,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
 
   if (thread_mlfqs) {  // mlfqs일 경우
-    struct thread *parent = thread_current();
     // 부모 쓰레드의 nice, recent_cpu 물려받기
     if (parent != NULL) {
       t->nice = parent->nice;
@@ -575,7 +576,11 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   t->nice = 0;
   t->recent_cpu = INT_TO_FP(0);
 
+  /* 자식 프로세스 구조체 리스트*/
   list_init(&t->children);
+
+  /* fd 테이블 인덱스 */
+  t->next_fd = MIN_FD;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

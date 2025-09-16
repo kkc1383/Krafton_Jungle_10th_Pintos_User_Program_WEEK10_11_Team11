@@ -26,7 +26,7 @@
 #endif
 
 static void process_cleanup(void);
-static bool load(const struct passing_argments *pargs, struct intr_frame *if_);
+static bool load(const void *pargs, struct intr_frame *if_);
 static void initd(void *f_name);
 static void __do_fork(void *);
 void argument_passing(const char *args, struct intr_frame *if_);
@@ -43,21 +43,11 @@ tid_t process_create_initd(const char *file_name) {
   tid_t tid;
 
   /* 인자전달 구조체 메모리 할당 */
-  struct passing_argments *pargs = malloc(sizeof(struct passing_argments));
+  struct passing_arguments *pargs = malloc(sizeof(struct passing_arguments));
   pargs->full_args = malloc(strlen(file_name) + 1);
   pargs->file_name = malloc(strlen(file_name) + 1);
   pargs->cp = malloc(sizeof(struct child_process));
-
-  /* 자식 프로세스 생성 */
-  struct child_process *cp = malloc(sizeof(struct child_process));
-  cp->tid = tid;
-  cp->is_exited = false;
-  cp->is_waited = false;
-  sema_init(&cp->wait_sema, 0);
-  list_push_back(&thread_current()->children, &cp->elem);
-
   pargs->full_args = file_name;
-  pargs->cp = cp;
 
   int len = strlen(file_name) + 1;
   memcpy(pargs->file_name, file_name, len);
@@ -65,6 +55,10 @@ tid_t process_create_initd(const char *file_name) {
   if (space) {
     *space = '\0';
   }
+
+  /* 자식 프로세스 관리*/
+  sema_init(&pargs->cp->wait_sema, 0);
+  list_push_back(&thread_current()->children, &pargs->cp->elem);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create(pargs->file_name, PRI_DEFAULT, initd, pargs);
@@ -83,15 +77,9 @@ static void initd(void *aux) {
 #ifdef VM
   supplemental_page_table_init(&thread_current()->spt);
 #endif
-
-  // 현재 스레드와 부모 스레드 연결
-  struct thread *curr = thread_current();
-  struct passing_argments *pargs = aux;
-  curr->self_cp = pargs->cp;
-
   process_init();
 
-  if (process_exec(pargs) < 0) PANIC("Fail to launch initd\n");
+  if (process_exec(aux) < 0) PANIC("Fail to launch initd\n");
   NOT_REACHED();
 }
 
@@ -188,6 +176,12 @@ int process_exec(void *pargs) {
 
   /* We first kill the current context */
   process_cleanup();
+
+  /* 자식 프로세스 관리*/
+  struct passing_arguments *pa = pargs;
+  struct thread *curr = thread_current();
+  pa->cp->tid = curr->tid;
+  curr->self_cp = pa->cp;
 
   /* And then load the binary */
   success = load(pargs, &_if);
@@ -345,14 +339,14 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t 
  * Stores the executable's entry point into *RIP
  * and its initial stack pointer into *RSP.
  * Returns true if successful, false otherwise. */
-static bool load(const struct passing_argments *pargs, struct intr_frame *if_) {
+static bool load(const void *pargs, struct intr_frame *if_) {
   struct thread *t = thread_current();
   struct ELF ehdr;
   struct file *file = NULL;
   off_t file_ofs;
   bool success = false;
   int i;
-  struct passing_argments *pa = pargs;
+  struct passing_arguments *pa = (struct passing_arguments *)pargs;
 
   /* Allocate and activate page directory. */
   t->pml4 = pml4_create();
