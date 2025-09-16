@@ -41,7 +41,8 @@
         "lib.h": "c",
         "numbers": "c",
         "list.h": "c",
-        "inttypes.h": "c"
+        "inttypes.h": "c",
+        "typeinfo": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }

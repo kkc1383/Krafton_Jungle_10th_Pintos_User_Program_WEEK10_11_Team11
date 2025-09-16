@@ -353,13 +353,9 @@ process_exec (void *f_name) {
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
-	/* We first kill the current context */
-	/* 먼저 현재 컨텍스트를 정리한다. */
-	// process_cleanup ();
+	process_cleanup();
 
-	/* pml4 세이브~ */
 	struct thread *t = thread_current();
-	uint64_t *old_pml4 = t->pml4;
 	
 	/* 커맨드라인 토큰화: prog + argv[] */
 	char *save_ptr;
@@ -370,7 +366,7 @@ process_exec (void *f_name) {
 	if (prog == NULL) { palloc_free_page(cmdline); return -1; }
 	argv_k[argc++] = prog;
 
-	strlcpy(t->name, prog, sizeof t->name);
+	// strlcpy(t->name, prog, sizeof t->name);
 
 	for (char *p = strtok_r(NULL, " ", &save_ptr);
 		p != NULL && argc < 63;
@@ -383,27 +379,14 @@ process_exec (void *f_name) {
 
 	/* ELF 로드 (프로그램명만) */
 	if (!load(prog, &_if)) {
-		// load 실패해서 pml4 박살남
 		palloc_free_page(cmdline);
-
-		// 새 pml4 파괴하고 예전 것 복구
-		if (t->pml4 != NULL && t->pml4 != old_pml4)
-			pml4_destroy(t->pml4);
-
-		t->pml4 = old_pml4;
-		process_activate(t);
-
 		if (t->my_status && !t->my_status->load_done) {
 			t->my_status->load_ok = false;
 			t->my_status->load_done = true;
 			sema_up(&t->my_status->load_sema);
 		}
-
 		return -1;
 	}
-
-	if (old_pml4 != NULL && old_pml4 != t->pml4)
-    	pml4_destroy(old_pml4);
 
 	uintptr_t top = (uintptr_t)_if.rsp;
 
@@ -466,7 +449,7 @@ process_exec (void *f_name) {
 	palloc_free_page (cmdline);
 
 	// /* fd 테이블 초기화 */
-	fd_table_init(thread_current());
+	// fd_table_init(thread_current());
 	
 	/* 로드 성공 통지 */
 	if (t->my_status && !t->my_status->load_done) {
@@ -556,14 +539,13 @@ process_exit (void) {
 	/* (추가 자원 정리: 실행 파일 write deny 해제, 열린 파일 닫기 등은 나중에) */
 	if (cur->fd_table) {
 		for (int i = 2; i < cur->fd_cap; i++) {
-		if (cur->fd_table[i]) {
-			file_close(cur->fd_table[i]);
-			cur->fd_table[i] = NULL;
-		}
+			if (cur->fd_table[i]) {
+				file_close(cur->fd_table[i]);
+				cur->fd_table[i] = NULL;
+			}
 		}
 	}
 
-	// 실행 파일 write 허용 후 닫기
 	if (cur->exec_file) {
 		file_allow_write(cur->exec_file);
 		file_close(cur->exec_file);
@@ -835,14 +817,13 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* 시작 주소 설정. */
 	if_->rip = ehdr.e_entry;
 
-	t->exec_file = file;
-	file_deny_write(file);
-	file = NULL;
-
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 	/* TODO: 여기에 코드를 작성한다.
 	 * TODO: 인자 전달을 구현하라 (project2/argument_passing.html 참고). */
+	t->exec_file = file;
+	file_deny_write(file);
+	file = NULL;
 
 	success = true;
 
@@ -865,15 +846,10 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	if ((phdr->p_offset & PGMASK) != (phdr->p_vaddr & PGMASK))
 		return false;
 
-	off_t len = file_length(file);
-	
 	/* p_offset must point within FILE. */
 	/* p_offset은 FILE의 범위 안을 가리켜야 한다. */
 	if (phdr->p_offset > (uint64_t) file_length (file))
 		return false;
-
-	if (phdr->p_filesz > 0 &&
-      phdr->p_offset + phdr->p_filesz > (uint64_t)len) return false;
 
 	/* p_memsz must be at least as big as p_filesz. */
 	/* p_memsz는 p_filesz보다 크거나 같아야 한다. */
@@ -885,16 +861,20 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	if (phdr->p_memsz == 0)
 		return false;
 
-	/* overflow 먼저 */
-	uint64_t end = phdr->p_vaddr + phdr->p_memsz;       // exclusive end
-	if (end < phdr->p_vaddr) return false;              // wrap-around
+		
+	/* The region cannot "wrap around" across the kernel virtual
+	   address space. */
+	/* 영역이 커널 가상 주소 공간을 가로질러 '랩 어라운드' 되어서는 안 된다. */
+	uint64_t start = phdr->p_vaddr;
+	uint64_t end = phdr->p_vaddr + phdr->p_memsz;
+	if (end < start) return false;
 
 	/* The virtual memory region must both start and end within the
 	   user address space range. */
 	/* 가상 메모리 영역의 시작과 끝이 모두 사용자 주소 공간 범위 안이어야 한다. */
 	if (!is_user_vaddr ((void *) phdr->p_vaddr))
 		return false;
-	if (!is_user_vaddr ((void *) (end - 1)))
+	if (!is_user_vaddr ((void *) (phdr->p_vaddr + phdr->p_memsz)))
 		return false;
 
 	/* Disallow mapping page 0.
@@ -908,6 +888,8 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	   null 포인터 단언으로 커널 패닉이 날 가능성이 매우 높다. */
 	if (phdr->p_vaddr < PGSIZE)
 		return false;
+
+	if (start < PGSIZE) return false;
 
 	/* It's okay. */
 	/* 유효한 세그먼트이다. */

@@ -229,26 +229,14 @@ system_exec(const char *cmdline) {
   if (!create) return -1;
   if (!copy_in_string(create, cmdline, PGSIZE)) {
     palloc_free_page(create);
-    return -1;
+    system_exit(-1);
   }
 
-  tid_t pid = process_create_initd(create);
-  palloc_free_page(create);
-  if (pid == TID_ERROR) return -1;
+  int r = process_exec(create);
 
-  struct thread *cur = thread_current();
-  struct child_status *cs = NULL;
-  for (struct list_elem *e = list_begin(&cur->children);
-       e != list_end(&cur->children); e = list_next(e)) {
-    struct child_status *tcs = list_entry(e, struct child_status, elem);
-    if (tcs->tid == pid) {cs = tcs; break;}
-  }
-  if (!cs) return -1;
-
-  /* 자식 로드 완료까지 대기 */
-  sema_down(&cs->load_sema);
-
-  return cs->load_ok ? pid : -1;
+  (void)r;
+  system_exit(-1);
+  __builtin_unreachable();
 }
 
 
