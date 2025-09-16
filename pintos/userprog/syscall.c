@@ -20,7 +20,6 @@ void syscall_handler(struct intr_frame *);
 
 /* system call */
 static void system_halt(void);
-static void system_exit(int status);
 static pid_t system_fork(const char *thread_name, struct intr_frame *f);
 static int system_exec(const char *cmdd_line);
 static int system_wait(pid_t pid);
@@ -33,7 +32,6 @@ static int system_write(int fd, const void *buffer, unsigned size);
 static void system_seek(int fd, unsigned position);
 static unsigned system_tell(int fd);
 static void system_close(int fd);
-
 static void validate_user_string(const char *str);
 static int allocate_fd(void);
 
@@ -182,7 +180,9 @@ static int system_open(const char *file) {
     int open_fd = allocate_fd();  // 파일 디스크립터 번호 할당
     struct thread *curr = thread_current();
     curr->fd_table[open_fd] = open_file;  // 해당 쓰레드의 파일 디스크립터 테이블 채우기
-    return open_fd;                       // 파일 디스크립터 번호 반환
+    if (!strcmp(curr->name, file))
+      file_deny_write(open_file);  // 본인 자신을 열려고 하면 deny_write설정
+    return open_fd;                // 파일 디스크립터 번호 반환
   } else
     return -1;  // 제대로 못열었으면 -1 반환
 }
@@ -216,14 +216,17 @@ static int system_read(int fd, void *buffer, unsigned size) {
 static int system_write(int fd, const void *buffer, unsigned size) {
   if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
   int write_bytes;
-  validate_user_string(buffer);
-  if (fd == 1) {  // 표준 출력일 경우
+  validate_user_string(buffer);  // buffer가 커널 영역이거나 NULL일경우 시스템 종료
+  if (fd == 1) {                 // 표준 출력일 경우
     putbuf(buffer, size);
     return size;
   } else {
     struct thread *curr = thread_current();
     struct file *write_file = curr->fd_table[fd];
+    /* Exception Handle */
     if (!write_file) return -1;
+    if (write_file->deny_write) return 0;
+
     lock_acquire(&filesys_lock);
     write_bytes = (int)file_write(write_file, buffer, size);
     lock_release(&filesys_lock);
