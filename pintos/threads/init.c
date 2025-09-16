@@ -279,7 +279,6 @@ static void run_actions(char **argv) {
     /* Check for required arguments. */
     for (i = 1; i < a->argc; i++)
       if (argv[i] == NULL) PANIC("action `%s' requires %d argument(s)", *argv, a->argc - 1);
-
     /* Invoke action and advance. */
     a->function(argv);
     argv += a->argc;

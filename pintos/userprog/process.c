@@ -19,6 +19,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 
 #ifdef VM
@@ -84,16 +85,14 @@ static void initd(void *f_name) {
 tid_t process_fork(const char *name, struct intr_frame *if_) {
   /* Clone current thread to new thread.*/
   // if_ 전달 위해 구조체 생성
-  struct fork_aux *aux = (struct fork_aux *)malloc(sizeof(struct fork_aux));
-  aux->parent_if = if_;
-  aux->parent = thread_current();
-  sema_init(&aux->fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
+  struct fork_aux aux;
+  aux.parent_if = if_;
+  aux.parent = thread_current();
+  sema_init(&aux.fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
   tid_t tid;
-  tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
-  printf("fork child tid is %d!!\n", tid);
-  if (tid == TID_ERROR) free(aux);
-  sema_down(&aux->fork_sema);
-
+  tid = thread_create(name, PRI_DEFAULT, __do_fork, &aux);
+  if (tid == TID_ERROR) free(&aux);
+  sema_down(&aux.fork_sema);
   return tid;
 }
 
@@ -171,7 +170,6 @@ static void __do_fork(struct fork_aux *aux) {
   }
   // process_init();
   sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
-  free(aux);
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
@@ -182,20 +180,20 @@ error:
  * Returns -1 on fail. */
 int process_exec(void *f_name) {
   /* argument parsing start */
-  char **argv;
+  char **argv = palloc_get_page(0);  //스택 프레임에 들어있어서 process_cleanup()시에 소멸하게 된다.
   char *token, *save_ptr;
 
   int i = 0;
   for (token = strtok_r(f_name, " ", &save_ptr); token != NULL;
        token = strtok_r(NULL, " ", &save_ptr)) {
-    argv[i++] = token;
+    argv[i] = malloc((strlen(token) + 1) * sizeof(char));
+    memcpy(argv[i++], token, strlen(token) + 1);
   }
   argv[i] = NULL;
-
   /* argument parsing end */
+
   char *file_name = argv[0];
   bool success;
-
   /* We cannot use the intr_frame in the thread structure.
    * This is because when current thread rescheduled,
    * it stores the execution information to the member. */
@@ -206,12 +204,16 @@ int process_exec(void *f_name) {
 
   /* We first kill the current context */
   process_cleanup();
-
+  // for (i = 0; argv[i] != NULL; i++) printf("exec : argv[%d] : %s\n", i, argv[i]);
   /* And then load the binary */
   success = load(argv, &_if);
 
+  /* 메모리 반환 */
+  for (int j = 0; j <= i; j++) {
+    free(argv[j]);
+  }
+  palloc_free_page(argv);
   /* If load failed, quit. */
-  palloc_free_page(file_name);
   if (!success) return -1;
 
   /* Start switched process. */
@@ -246,8 +248,13 @@ int process_wait(tid_t child_tid) {
   }
   lock_release(&curr->children_lock);
 
-  if (!target_child) return -1;
-  if (target_child->has_exited) sema_down(&target_child->wait_sema);
+  // child_tid가 내 자식이 아니거나, 이미 그 자식을 누군가 기다리고 있다면 -1
+  if (!target_child || !list_empty(&target_child->wait_sema.waiters)) return -1;
+  if (!target_child->has_exited)
+    sema_down(&target_child->wait_sema);  // 아직 종료 안되었다면 기다리기
+  // 종료되었으면
+  /* 여기서 수거작업이 이루어지면 됨 */
+  list_remove(&target_child->child_elem);  // child_list에서 삭제
   return target_child->exit_status;
 }
 

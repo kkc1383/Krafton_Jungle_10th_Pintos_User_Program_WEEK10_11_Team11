@@ -60,13 +60,13 @@ void sema_init(struct semaphore *sema, unsigned value) {
    sema_down function. */
 void sema_down(struct semaphore *sema) {
   enum intr_level old_level;
-
+  struct thread *curr = thread_current();
   ASSERT(sema != NULL);
   ASSERT(!intr_context());
 
   old_level = intr_disable();
   while (sema->value == 0) {  // sema_up에서 최댓값을 가져오므로 넣을때는 끝에서부터 걍 넣자
-    list_push_back(&sema->waiters, &thread_current()->elem);
+    list_push_back(&sema->waiters, &curr->elem);
     thread_block();
   }
   sema->value--;
@@ -108,7 +108,6 @@ void sema_up(struct semaphore *sema) {
 
   sema->value++;  // good
 
-  // printf(" list_empty? %d \n", list_empty(&sema->waiters));
   if (!list_empty(&sema->waiters)) {
     // sema->waiters 중에서 우선순위 최댓값인거 가져와야 함. 비교함수가 반대여서 min을
     // 씀...(최댓값뽑는게맞음)

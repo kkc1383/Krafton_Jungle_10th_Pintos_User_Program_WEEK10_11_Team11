@@ -297,7 +297,6 @@ void thread_unblock(struct thread *t) {
   old_level = intr_disable();  // 인터럽트를 disable상태로 만들고 이전 상태를
                                // 반환(기존 상태 저장해놓고, disable 만듬)
   ASSERT(t->status == THREAD_BLOCKED);  // 해당 쓰레드의 status 필드가 THREAD_BLOCKED인지 확인
-
   if (thread_mlfqs) {
     list_push_back(&mlfqs_ready_queues[t->priority - PRI_MIN],
                    &t->elem);  // 우선순위에 맞는 큐에 집어넣음
@@ -849,4 +848,14 @@ struct thread *thread_get_by_tid(tid_t tid) {
     if (t->tid == tid) return t;
   }
   return NULL;
+}
+
+struct thread *thread_return(struct list_elem *t) {
+  return list_entry(t, struct thread, elem);
+}
+struct child_info *child_return(struct list_elem *e) {
+  return list_entry(e, struct child_info, child_elem);
+}
+struct thread *all_thread_return(struct list_elem *t) {
+  return list_entry(t, struct thread, all_elem);
 }

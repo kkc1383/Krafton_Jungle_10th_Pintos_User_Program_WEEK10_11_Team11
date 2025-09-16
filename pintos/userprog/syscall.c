@@ -119,7 +119,7 @@ void syscall_handler(struct intr_frame *f UNUSED) {
 }
 
 static void system_halt(void) { power_off(); }
-static void system_exit(int status) {
+void system_exit(int status) {
   /* child_list에 종료되었음을 기록, status, has_exited 등 */
   // 여기에 한 이유는 status가 process_exit()까지 못간다. 인자로 넘기려니 고칠게 너무많음.
   struct thread *curr = thread_current();
@@ -139,14 +139,24 @@ static void system_exit(int status) {
   }
   lock_release(&parent->children_lock);  // child_list 순회하기 때문에
 
+  // printf("%s: exit(%d), pid : %d\n", thread_current()->name, status, curr->tid);
   printf("%s: exit(%d)\n", thread_current()->name, status);
   thread_exit();
 }
 static pid_t system_fork(const char *thread_name, struct intr_frame *f) {
   return process_fork(thread_name, f);
 }
-static int system_exec(const char *cmdd_line) { ; }
-static int system_wait(pid_t pid) { return process_wait(pid); }
+static int system_exec(const char *cmdd_line) {
+  validate_user_string(cmdd_line);
+  int result = process_exec(cmdd_line);
+  system_exit(result);
+  // never reached!!
+  return result;
+}
+static int system_wait(pid_t pid) {
+  // printf("wait : pid is %d\n", pid);
+  return process_wait(pid);
+}
 static bool system_create(const char *file, unsigned initial_size) {
   // 대신에 락이 걸려야함
   validate_user_string(file);  // file이 널 문자인지, 혹은 페이지 테이블에 없는 주소인지
