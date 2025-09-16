@@ -26,7 +26,22 @@
         "console.h": "c",
         "stdio.h": "c",
         "intrinsic.h": "c",
-        "gdt.h": "c"
+        "gdt.h": "c",
+        "file.h": "c",
+        "init.h": "c",
+        "debug.h": "c",
+        "filesys.h": "c",
+        "string.h": "c",
+        "palloc.h": "c",
+        "input.h": "c",
+        "vaddr.h": "c",
+        "directory.h": "c",
+        "syscall-nr.h": "c",
+        "process.h": "c",
+        "lib.h": "c",
+        "numbers": "c",
+        "list.h": "c",
+        "inttypes.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }

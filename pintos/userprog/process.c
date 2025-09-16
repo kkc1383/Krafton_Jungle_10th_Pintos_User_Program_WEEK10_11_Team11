@@ -30,11 +30,19 @@ static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
 
+static void fd_table_init(struct thread *current);
+static bool duplicate_pte (uint64_t *pte, void *va, void *aux);
 
 /* 부모가 만든 자식 상태 노드와 커맨드라인을 자식에게 건네기 위한 구조체 */
 struct exec_info {
   char *cmdline;                 /* palloc_get_page()로 복사한 커맨드라인 */
   struct child_status *cs;       /* 부모가 만들어 children에 넣어둔 노드 */
+};
+
+struct fork_args {
+  struct thread *parent;
+  struct intr_frame parent_if;  // 사본으로 전달
+  struct child_status *cs;
 };
 
 
@@ -92,6 +100,9 @@ process_create_initd (const char *file_name) {
 	cs->waited = false;
 	cs->ref_cnt = 2;
 	sema_init(&cs->sema, 0);
+	sema_init(&cs->load_sema, 0);
+	cs->load_done = false;
+	cs->load_ok = false;
 	list_push_back(&thread_current()->children, &cs->elem);
 
 	struct exec_info *ei = malloc(sizeof *ei);
@@ -134,6 +145,12 @@ initd (void *aux_) {
 	free(ei);
 
 	if (process_exec (cmd) < 0) {
+		// 로드 실패 통지
+		if (cur->my_status && !cur->my_status->load_done) {
+			cur->my_status->load_ok = false;
+			cur->my_status->load_done = true;
+			sema_up(&cur->my_status->load_sema);
+		}
 		/* exec 실패: 부모에게 -1로 종료 신호 주고 종료 */
 		cur->exit_status = -1;
 		thread_exit();	
@@ -147,10 +164,48 @@ initd (void *aux_) {
  * 생성 실패 시 TID_ERROR를 반환한다. */
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
+	process_init();
+
+	struct thread *parent = thread_current();
+
+	// 1) child_status 노드 생성 + 부모 children에 등록
+	struct child_status *cs = malloc(sizeof *cs);
+	if (!cs) return TID_ERROR;
+	cs->tid = TID_ERROR;
+	cs->exit_code = -1;
+	cs->exited = false;
+	cs->waited = false;
+	cs->ref_cnt = 2;                 // parent + child
+	sema_init(&cs->sema, 0);
+	sema_init(&cs->load_sema, 0);    // fork에서는 안 쓰지만 구조체 일관성
+	cs->load_done = true;            // fork 경로는 사용 안 함
+	cs->load_ok = true;
+	list_push_back(&parent->children, &cs->elem);
+
 	/* Clone current thread to new thread.*/
 	/* 현재 스레드를 새 스레드로 복제. */
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+	struct fork_args *fa = malloc(sizeof *fa);
+	if (!fa) { list_remove(&cs->elem); free(cs); return TID_ERROR; }
+	fa->parent = parent;
+	memcpy(&fa->parent_if, if_, sizeof *if_);
+	fa->cs = cs;
+
+	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, fa);
+	if (tid == TID_ERROR) {
+		list_remove(&cs->elem);
+		free(cs);
+		free(fa);
+		return TID_ERROR;
+	}
+	cs->tid = tid;                   // 이제 TID 기록
+
+	sema_down(&cs->load_sema);
+	if (!cs->load_ok) {
+		list_remove(&cs->elem);
+		if (--cs->ref_cnt == 0) free(cs);
+		return TID_ERROR;
+	}
+	return tid;
 }
 
 #ifndef VM
@@ -161,34 +216,40 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 static bool
 duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	struct thread *current = thread_current ();
-	struct thread *parent = (struct thread *) aux;
-	void *parent_page;
-	void *newpage;
-	bool writable;
+	struct thread *parent =  aux;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
 	/* 1. TODO: parent_page가 커널 페이지라면 즉시 반환한다. */
+	if (is_kernel_vaddr(va)) return true;
 
 	/* 2. Resolve VA from the parent's page map level 4. */
 	/* 2. 부모의 pml4에서 VA에 해당하는 물리 페이지를 얻는다. */
-	parent_page = pml4_get_page (parent->pml4, va);
+	void *parent_page = pml4_get_page (parent->pml4, va);
+	if (parent_page == NULL) return false;
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
 	/* 3. TODO: 자식용 PAL_USER 페이지를 새로 할당하고 결과를 NEWPAGE에 저장한다. */
+	void *newpage = palloc_get_page(PAL_USER);
+	if (newpage == NULL) return false;
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
 	/* 4. TODO: 부모 페이지의 내용을 새 페이지로 복제하고,
 	 *    TODO: 부모 페이지가 쓰기 가능인지 확인하여 WRITABLE을 설정한다. */
+	memcpy(newpage, parent_page, PGSIZE);
+	bool writable = (*pte & PTE_W) != 0; 
 
-	/* 5. Add new page to child's page table at address VA with WRITABLE
+	/* 5. Add new page to child's page table at a37-52
+	ddress VA with WRITABLE
 	 *    permission. */
 	/* 5. WRITABLE 권한으로 VA 주소에 새 페이지를 자식의 페이지 테이블에 매핑한다. */
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
 		/* 6. TODO: if fail to insert page, do error handling. */
 		/* 6. TODO: 매핑에 실패하면 에러 처리를 수행한다. */
+		palloc_free_page(newpage);
+		return false;
 	}
 	return true;
 }
@@ -203,17 +264,21 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
  *       즉, process_fork의 두 번째 인자를 이 함수로 전달해야 한다. */
 static void
 __do_fork (void *aux) {
+	struct fork_args *fa = aux;
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *) aux;
+	struct thread *parent = fa->parent;
+	struct child_status *cs = fa->cs;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
 	/* TODO: parent_if를 전달하는 방법을 구현한다(예: process_fork()의 if_). */
-	struct intr_frame *parent_if;
-	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
 	/* 1. CPU 컨텍스트를 로컬 스택으로 복사한다. */
-	memcpy (&if_, parent_if, sizeof (struct intr_frame));
+	memcpy (&if_, &fa->parent_if, sizeof if_);
+	free(fa);
+
+	current->my_status = cs;
+	process_init();
 
 	/* 2. Duplicate PT */
 	/* 2. 페이지 테이블 복제 */
@@ -240,15 +305,32 @@ __do_fork (void *aux) {
 	 * TODO: 힌트) 파일 객체를 복제하려면 include/filesys/file.h의 `file_duplicate`를 사용하라.
 	 * TODO:       이 함수가 부모의 자원을 성공적으로 복제하기 전까지
 	 * TODO:       부모는 fork()에서 반환되어서는 안 된다. */
+	if (parent->fd_table && parent->fd_cap > 0) {
+		current->fd_cap = parent->fd_cap;
+		current->fd_table = calloc(current->fd_cap, sizeof *current->fd_table);
+		if (!current->fd_table) goto error;
+		for (int i = 0; i < parent->fd_cap; i++) {
+			if (parent->fd_table[i]) {
+				current->fd_table[i] = file_duplicate(parent->fd_table[i]);
+			}
+		}
+	}
 
-	process_init ();
+	cs->load_ok = true;
+	cs->load_done = true;
+	sema_up(&cs->load_sema);
+
+	if_.R.rax = 0;
 
 	/* Finally, switch to the newly created process. */
 	/* 마지막으로 새로 생성한 프로세스로 전환한다. */
-	if (succ)
-		do_iret (&if_);
+	do_iret (&if_);
 error:
-	thread_exit ();
+	cs->load_ok = false;
+	cs->load_done = true;
+	sema_up(&cs->load_sema);
+	current->exit_status = -1;
+  	thread_exit();
 }
 
 /* Switch the current execution context to the f_name.
@@ -273,8 +355,11 @@ process_exec (void *f_name) {
 
 	/* We first kill the current context */
 	/* 먼저 현재 컨텍스트를 정리한다. */
-	process_cleanup ();
+	// process_cleanup ();
 
+	/* pml4 세이브~ */
+	struct thread *t = thread_current();
+	uint64_t *old_pml4 = t->pml4;
 	
 	/* 커맨드라인 토큰화: prog + argv[] */
 	char *save_ptr;
@@ -285,6 +370,8 @@ process_exec (void *f_name) {
 	if (prog == NULL) { palloc_free_page(cmdline); return -1; }
 	argv_k[argc++] = prog;
 
+	strlcpy(t->name, prog, sizeof t->name);
+
 	for (char *p = strtok_r(NULL, " ", &save_ptr);
 		p != NULL && argc < 63;
 		p = strtok_r(NULL, " ", &save_ptr)) {
@@ -292,13 +379,31 @@ process_exec (void *f_name) {
 	}
 	argv_k[argc] = NULL;
 
+
+
 	/* ELF 로드 (프로그램명만) */
 	if (!load(prog, &_if)) {
+		// load 실패해서 pml4 박살남
 		palloc_free_page(cmdline);
+
+		// 새 pml4 파괴하고 예전 것 복구
+		if (t->pml4 != NULL && t->pml4 != old_pml4)
+			pml4_destroy(t->pml4);
+
+		t->pml4 = old_pml4;
+		process_activate(t);
+
+		if (t->my_status && !t->my_status->load_done) {
+			t->my_status->load_ok = false;
+			t->my_status->load_done = true;
+			sema_up(&t->my_status->load_sema);
+		}
+
 		return -1;
 	}
 
-
+	if (old_pml4 != NULL && old_pml4 != t->pml4)
+    	pml4_destroy(old_pml4);
 
 	uintptr_t top = (uintptr_t)_if.rsp;
 
@@ -360,10 +465,29 @@ process_exec (void *f_name) {
 	/* 적재에 실패하면 종료한다. */
 	palloc_free_page (cmdline);
 
+	// /* fd 테이블 초기화 */
+	fd_table_init(thread_current());
+	
+	/* 로드 성공 통지 */
+	if (t->my_status && !t->my_status->load_done) {
+		t->my_status->load_ok = true;
+		t->my_status->load_done = true;
+		sema_up(&t->my_status->load_sema);
+	}
+
 	/* Start switched process. */
 	/* 전환된 프로세스를 시작한다. */
 	do_iret (&_if);
 	NOT_REACHED ();
+}
+
+static void fd_table_init(struct thread *t) {
+  if (t->fd_table) return;           // 중복 방지
+  t->fd_cap   = 64;
+  t->fd_table = calloc(t->fd_cap, sizeof *t->fd_table);
+  /* 0(stdin),1(stdout)은 예약
+   * 테이블은 2부터 사용
+   */
 }
 
 
@@ -430,6 +554,21 @@ process_exit (void) {
 	struct thread *cur = thread_current ();
 
 	/* (추가 자원 정리: 실행 파일 write deny 해제, 열린 파일 닫기 등은 나중에) */
+	if (cur->fd_table) {
+		for (int i = 2; i < cur->fd_cap; i++) {
+		if (cur->fd_table[i]) {
+			file_close(cur->fd_table[i]);
+			cur->fd_table[i] = NULL;
+		}
+		}
+	}
+
+	// 실행 파일 write 허용 후 닫기
+	if (cur->exec_file) {
+		file_allow_write(cur->exec_file);
+		file_close(cur->exec_file);
+		cur->exec_file = NULL;
+	}
 
 	/* 스펙 요구 종료 메시지 */
 	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
@@ -696,6 +835,10 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* 시작 주소 설정. */
 	if_->rip = ehdr.e_entry;
 
+	t->exec_file = file;
+	file_deny_write(file);
+	file = NULL;
+
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
 	/* TODO: 여기에 코드를 작성한다.
@@ -722,10 +865,15 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	if ((phdr->p_offset & PGMASK) != (phdr->p_vaddr & PGMASK))
 		return false;
 
+	off_t len = file_length(file);
+	
 	/* p_offset must point within FILE. */
 	/* p_offset은 FILE의 범위 안을 가리켜야 한다. */
 	if (phdr->p_offset > (uint64_t) file_length (file))
 		return false;
+
+	if (phdr->p_filesz > 0 &&
+      phdr->p_offset + phdr->p_filesz > (uint64_t)len) return false;
 
 	/* p_memsz must be at least as big as p_filesz. */
 	/* p_memsz는 p_filesz보다 크거나 같아야 한다. */
@@ -737,18 +885,16 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	if (phdr->p_memsz == 0)
 		return false;
 
+	/* overflow 먼저 */
+	uint64_t end = phdr->p_vaddr + phdr->p_memsz;       // exclusive end
+	if (end < phdr->p_vaddr) return false;              // wrap-around
+
 	/* The virtual memory region must both start and end within the
 	   user address space range. */
 	/* 가상 메모리 영역의 시작과 끝이 모두 사용자 주소 공간 범위 안이어야 한다. */
 	if (!is_user_vaddr ((void *) phdr->p_vaddr))
 		return false;
-	if (!is_user_vaddr ((void *) (phdr->p_vaddr + phdr->p_memsz)))
-		return false;
-
-	/* The region cannot "wrap around" across the kernel virtual
-	   address space. */
-	/* 영역이 커널 가상 주소 공간을 가로질러 '랩 어라운드' 되어서는 안 된다. */
-	if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr)
+	if (!is_user_vaddr ((void *) (end - 1)))
 		return false;
 
 	/* Disallow mapping page 0.

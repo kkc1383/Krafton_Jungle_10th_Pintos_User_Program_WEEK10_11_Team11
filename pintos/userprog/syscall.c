@@ -1,5 +1,6 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
@@ -7,12 +8,24 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "filesys/file.h"
+#include "threads/init.h"
+#include "filesys/filesys.h"
+#include "filesys/directory.h"
+#include "threads/vaddr.h"   // is_user_vaddr()
+#include "threads/mmu.h"     // pml4_get_page()
+#include "devices/input.h"   // input_getc()
+#include "threads/palloc.h"  // palloc_get_page, palloc_free_page
+#include "userprog/process.h"
+#include "threads/synch.h"
+#include "list.h"
 
+static struct lock filesys_lock;
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
-/* f->R. 뭐시기 하며 하면 자꾸 실수해서 바꿈 */
+/* f->R. 뭐시기보다 이게 더 있어보임 ㄹㅇ */
 #define SC_NO(f)   ((f)->R.rax)
 #define ARG0(f)    ((f)->R.rdi)
 #define ARG1(f)    ((f)->R.rsi)
@@ -21,10 +34,43 @@ void syscall_handler (struct intr_frame *);
 #define ARG4(f)    ((f)->R.r8)
 #define ARG5(f)    ((f)->R.r9)
 #define RETVAL(f)  ((f)->R.rax)
+#define RET(f, v)  ( (f)->R.rax = (uint64_t)(v) )
+
+#define FIRST_FD 2
+#define FD_GROW_STEP 32 
 
 /* 프로토 타입 */
-static void sys_exit (int status) NO_RETURN;
-static long sys_write (int fd, const void *buf, unsigned size);
+static void system_halt(void) NO_RETURN;
+static void system_exit (int status) NO_RETURN;
+
+static tid_t system_fork(const char *thread_name, struct intr_frame *parent_if);
+
+static int system_exec(const char *cmdline);
+
+static int  system_wait(tid_t pid);
+
+static bool system_create(const char *file, unsigned initial_size);
+static bool system_remove(const char *file);
+static int  system_open(const char *file);
+static void system_close(int fd);
+
+static int  system_filesize(int fd);
+
+static int  system_read(int fd, void *buffer, unsigned size);
+static long  system_write(int fd, const void *buffer, unsigned size);
+
+static void system_seek(int fd, unsigned position);
+static unsigned system_tell(int fd);
+
+/* 시스템콜 헬퍼 */
+static struct file *fd_get(int fd);
+static void assert_user_range(const void *uaddr, size_t size);
+static bool copy_in_string(char *kdst, const char *usrc, size_t max_len);
+static void copy_in(void *kdst, const void *usrc, size_t n);
+static void copy_out(void *udst, const void *ksrc, size_t n);
+static int  fd_alloc(struct file *f);   // 빈 슬롯 찾아 file* 넣고 fd 반환
+
+
 
 /* System call.
  *
@@ -64,47 +110,391 @@ syscall_init (void) {
 	 * 따라서 EFLAGS의 해당 비트들을 마스킹(비활성화)했다. */
 	write_msr(MSR_SYSCALL_MASK,
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
+
+  lock_init(&filesys_lock);
 }
 
 /* The main system call interface */
 /* 주요 시스템 콜 인터페이스 */
-void
-syscall_handler (struct intr_frame *f UNUSED) {
-	// TODO: Your implementation goes here.
-	// TODO: 구현을 이곳에 작성하라.
-	switch (SC_NO(f))
-	{
-	case SYS_EXIT: {
-		int status = (int) ARG0(f);
-		sys_exit(status);
-		__builtin_unreachable();
-	}
-	case SYS_WRITE: {
-		int fd = (int)ARG0(f);
-		const void *buf = (const void *)ARG1(f);
-		unsigned size = (unsigned)ARG2(f);
-		RETVAL(f) = sys_write(fd, buf, size);
-		break;
-	}
-	default:
-		sys_exit(-1);
-	}
+/* 개쩌는 가시성 (아님) */
+void syscall_handler(struct intr_frame *f) {
+  switch (SC_NO(f)) {
+    case SYS_HALT:   system_halt(); __builtin_unreachable();
+    case SYS_EXIT:   system_exit((int)ARG0(f)); __builtin_unreachable();
+
+    case SYS_FORK:   RET(f, system_fork((const char *)ARG0(f), f)); break;
+    case SYS_EXEC:   RET(f, system_exec((const char *)ARG0(f))); /* 성공 시 복귀 안함 */ break;
+
+    case SYS_WAIT:   RET(f, system_wait((tid_t)ARG0(f))); break;
+ 
+    case SYS_CREATE: RET(f, system_create((const char *)ARG0(f), (unsigned)ARG1(f))); break;
+    case SYS_REMOVE: RET(f, system_remove((const char *)ARG0(f))); break;
+
+    case SYS_OPEN:   RET(f, system_open((const char *)ARG0(f))); break;
+    case SYS_CLOSE:  system_close((int)ARG0(f)); break;
+
+    case SYS_FILESIZE: RET(f, system_filesize((int)ARG0(f))); break;
+
+    case SYS_READ:   RET(f, system_read((int)ARG0(f), (void *)ARG1(f), (unsigned)ARG2(f))); break;
+    case SYS_WRITE:  RET(f, system_write((int)ARG0(f), (const void *)ARG1(f), (unsigned)ARG2(f))); break;
+  
+	  case SYS_SEEK:   system_seek((int)ARG0(f), (unsigned)ARG1(f)); break;
+    case SYS_TELL:   RET(f, system_tell((int)ARG0(f))); break;
+
+    default:         system_exit(-1); __builtin_unreachable();
+  }
 }
 
+
 static void
-sys_exit (int status) {
+system_halt(void) { power_off(); __builtin_unreachable(); }
+
+static void
+system_exit (int status) {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
 	thread_exit();
 	__builtin_unreachable();
 }
 
+
 static long
-sys_write (int fd, const void *buf, unsigned size) {
-  if (fd == 1) {              // STDOUT만 지원
-    if (buf == NULL) return -1;
-    putbuf(buf, size);        // 콘솔로 바로 출력
-    return (long)size;
+system_write (int fd, const void *buf, unsigned size) {
+  if (size == 0) return 0;
+  if (buf == NULL) system_exit(-1);
+
+  void *kpage = palloc_get_page(0);
+  if (!kpage) return -1;
+
+  long total = 0;
+
+  if (fd == 1) {              // STDOUT
+    while ((unsigned)total < size) {
+      size_t chunk = size - (unsigned)total;
+      if (chunk > PGSIZE) chunk = PGSIZE;
+
+      copy_in(kpage, (const uint8_t *)buf + total, chunk);
+      putbuf((const char *)kpage, chunk);
+
+      total += (long)chunk;
+    }
+    palloc_free_page(kpage);
+    return total;
   }
-  return -1;                  // 나머지는 아직 미지원
+
+  if (fd == 0) { palloc_free_page(kpage); return -1; }
+
+  struct file *f = fd_get(fd);
+  if (!f) { palloc_free_page(kpage); return -1; }
+
+  lock_acquire(&filesys_lock);
+  while ((unsigned)total < size) {
+    size_t chunk = size - (unsigned)total;
+    if (chunk > PGSIZE) chunk = PGSIZE;
+
+    copy_in(kpage, (const uint8_t *)buf + total, chunk);
+    off_t n = file_write(f, kpage, chunk);
+    if (n <= 0) break;
+    total += (long)n;
+    if ((size_t)n < chunk) break;
+  }
+  lock_release(&filesys_lock);
+  palloc_free_page(kpage);
+  return total;
+}
+
+static unsigned
+system_tell(int fd) {
+  if (fd == 1 || fd == 0) return -1;
+  struct file *f = fd_get(fd);
+  if (f == NULL) return -1;
+  
+  lock_acquire(&filesys_lock);
+  off_t pose = file_tell(f);
+  lock_release(&filesys_lock);
+  return pose;
+}
+
+static tid_t
+system_fork(const char *thread_name, struct intr_frame *parent_if) {
+  char name[NAME_MAX + 1];
+  if (!copy_in_string(name, thread_name, sizeof name))
+    return TID_ERROR;
+  return process_fork(name, parent_if);
+}
+
+static int
+system_exec(const char *cmdline) {
+  char *create = palloc_get_page(0);
+  if (!create) return -1;
+  if (!copy_in_string(create, cmdline, PGSIZE)) {
+    palloc_free_page(create);
+    return -1;
+  }
+
+  tid_t pid = process_create_initd(create);
+  palloc_free_page(create);
+  if (pid == TID_ERROR) return -1;
+
+  struct thread *cur = thread_current();
+  struct child_status *cs = NULL;
+  for (struct list_elem *e = list_begin(&cur->children);
+       e != list_end(&cur->children); e = list_next(e)) {
+    struct child_status *tcs = list_entry(e, struct child_status, elem);
+    if (tcs->tid == pid) {cs = tcs; break;}
+  }
+  if (!cs) return -1;
+
+  /* 자식 로드 완료까지 대기 */
+  sema_down(&cs->load_sema);
+
+  return cs->load_ok ? pid : -1;
+}
+
+
+static int
+system_wait(tid_t pid) {
+  return process_wait(pid);
+}
+
+static bool
+system_create(const char *file, unsigned initial_size) {
+  char kname[NAME_MAX + 1];
+
+  bool ok = copy_in_string(kname, file, sizeof kname);
+  if (!ok) {
+    return false;
+  }
+  
+  lock_acquire(&filesys_lock);
+  bool crt = filesys_create(kname, initial_size);
+  lock_release(&filesys_lock);
+  return crt;
+}
+
+
+static bool
+system_remove(const char *file) {
+  char kname[NAME_MAX + 1];
+  if (!copy_in_string(kname, file, sizeof kname))
+    return false;
+
+  lock_acquire(&filesys_lock);
+  bool rem = filesys_remove(kname);
+  lock_release(&filesys_lock);
+  return rem;
+}
+
+static int
+system_open(const char *file) {
+  char kname[NAME_MAX + 1];
+  if (!copy_in_string(kname, file, sizeof kname))
+    return -1;
+
+  lock_acquire(&filesys_lock);
+  struct file *f = filesys_open(kname);
+  lock_release(&filesys_lock);
+  if (f == NULL) return -1;
+
+  int fd = fd_alloc(f);
+  if (fd < 0) {
+    lock_acquire(&filesys_lock);
+    file_close(f);
+    lock_release(&filesys_lock);
+    return -1;
+  }
+  return fd;
+}
+
+static void
+system_close(int fd) {
+  struct thread *t = thread_current();
+
+  if (fd < 0 || fd >= t->fd_cap) return;   // 범위 밖
+  struct file *f = t->fd_table[fd];
+  if (f == NULL) return;
+
+  t->fd_table[fd] = NULL;                  // 먼저 테이블에서 제거
+  lock_acquire(&filesys_lock);
+  file_close(f);
+  lock_release(&filesys_lock);
+}
+
+static int
+system_filesize(int fd) {
+  if (fd == 1 || fd == 0) return -1;
+  struct file *f = fd_get(fd);
+  if (f == NULL) return -1;
+
+  lock_acquire(&filesys_lock);
+  off_t len = file_length(f);
+  lock_release(&filesys_lock);
+  return (int)len;
+}
+
+static int
+system_read(int fd, void *buffer, unsigned size) {
+  if (size == 0) return 0;
+
+  if (fd == 0) {                                // 키보드
+    for (unsigned i = 0; i < size; i++) {
+      uint8_t key = (uint8_t)input_getc();
+      copy_out((uint8_t*)buffer + i, &key, 1);
+    }
+    return (int)size;
+  }
+
+  if (fd == 1) return -1;
+
+  struct file *f = fd_get(fd);
+  if (!f) return -1;
+
+  void *read_page = palloc_get_page(PAL_ZERO);
+  if (read_page == NULL) return -1;
+
+  int total = 0;
+
+  lock_acquire(&filesys_lock);
+  while (total < (int)size) {
+    size_t chunk = size - total;
+    if (chunk > PGSIZE) chunk = PGSIZE;
+
+    off_t n = file_read(f, read_page, (off_t)chunk);
+    if (n <= 0) break;
+
+    copy_out((uint8_t*)buffer + total, read_page, (size_t)n);
+    total += (int)n;
+  }
+  lock_release(&filesys_lock);
+  palloc_free_page(read_page);
+  return total;
+}
+
+static void
+system_seek(int fd, unsigned position) {
+  if (fd == 1 || fd == 0) return;
+  struct file *f = fd_get(fd);
+  if (f == NULL) return;
+
+  lock_acquire(&filesys_lock);
+  file_seek(f, position);
+  lock_release(&filesys_lock);
+}
+
+// fd 뽑아보기
+static struct
+file *fd_get(int fd) {
+  struct thread *t = thread_current();
+  if (fd < 0 || fd >= t->fd_cap) return NULL;
+  return t->fd_table[fd];
+}
+
+// 유저 주소 범위가 전부 매핑돼 있는지 확인
+static void
+assert_user_range(const void *uaddr, size_t size) {
+  if (uaddr == NULL) system_exit(-1);
+  if (size == 0) return;
+  const uint8_t *begin = (const uint8_t *)uaddr;
+  const uint8_t *end   = begin + size - 1;
+
+  // 범위를 페이지 경계 단위로 훑는다
+  for (const uint8_t *p = pg_round_down(begin); p <= end; p += PGSIZE) {
+    if (!is_user_vaddr(p)) system_exit(-1);                 // 유저 주소 맞는지 체크
+    if (pml4_get_page(thread_current()->pml4, p) == NULL)   // p매핑 pml4에 되어있는지 체크
+      system_exit(-1);
+  }
+}
+
+static bool
+copy_in_string(char *kdst, const char *usrc, size_t max_len) {
+  if (usrc == NULL) system_exit(-1);
+
+  size_t i = 0;
+  while (i < max_len) {
+    const uint8_t *u = (const uint8_t *)usrc + i;
+
+    if (!is_user_vaddr(u)) system_exit(-1);
+
+    void *kp = pml4_get_page(thread_current()->pml4, pg_round_down(u));
+    if (kp == NULL) system_exit(-1);
+
+    char c = *(((char *)kp) + pg_ofs(u));  // base + ofs 로 1바이트 읽기
+    kdst[i++] = c;
+    if (c == '\0') return true;  // 정상 종료: 제한 내에서 NUL 발견
+  }
+
+  kdst[max_len - 1] = '\0';      // 끝문자열 null 처리 (최대 길이 벗어나서 절삭)
+  return false;
+}
+
+static void
+copy_in(void *kdst, const void *usrc, size_t n) {
+  uint8_t *kd = (uint8_t *)kdst;
+  const uint8_t *u = (const uint8_t *)usrc;
+
+  while (n > 0) {
+    if (!is_user_vaddr(u)) system_exit(-1);
+
+    const void *kp = pml4_get_page(thread_current()->pml4, pg_round_down(u));
+    if (kp == NULL) system_exit(-1);
+
+    const uint8_t *ksrc = (const uint8_t *)kp + pg_ofs(u);
+
+    size_t chunk = PGSIZE - pg_ofs(u);
+    if (chunk > n) chunk = n;
+
+    memcpy(kd, ksrc, chunk);
+    kd += chunk;
+    u  += chunk;
+    n  -= chunk;
+  }
+}
+
+static void
+copy_out(void *udst, const void *ksrc, size_t n) {
+  uint8_t *u = (uint8_t *)udst;
+  const uint8_t *k = (const uint8_t *)ksrc;
+
+  while (n > 0) {
+    if (!is_user_vaddr(u)) system_exit(-1);
+
+    void *kp = pml4_get_page(thread_current()->pml4, pg_round_down(u));
+    if (kp == NULL) system_exit(-1);
+
+    uint8_t *kdst = (uint8_t *)kp + pg_ofs(u);
+
+    size_t chunk = PGSIZE - pg_ofs(u);
+    if (chunk > n) chunk = n;
+
+    memcpy(kdst, k, chunk);
+    u += chunk;
+    k += chunk;
+    n -= chunk;
+  }
+}
+
+static bool fd_ensure_table(void) {
+  struct thread *t = thread_current();
+  if (t->fd_table && t->fd_cap > 0) return true;
+
+  int cap = FD_GROW_STEP;
+  struct file **newtab = (struct file **)palloc_get_page(PAL_ZERO);
+  if (!newtab) return false;
+
+  t->fd_table = newtab;
+  t->fd_cap   = PGSIZE / (int)sizeof(t->fd_table[0]);
+  return true;
+}
+
+static int fd_alloc(struct file *f) {
+  struct thread *t = thread_current();
+  if (!fd_ensure_table()) return -1;
+
+  for (int i = FIRST_FD; i < t->fd_cap; i++) {
+    if (t->fd_table[i] == NULL) {
+      t->fd_table[i] = f;
+      return i;
+    }
+  }
+  return -1;
 }

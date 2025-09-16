@@ -309,7 +309,7 @@ struct thread *thread_current(void) {
      recursion can cause stack overflow. */
   ASSERT(is_thread(t));
   ASSERT(t->status == THREAD_RUNNING);
-
+  
   return t;
 }
 
@@ -556,6 +556,10 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   ASSERT(t != NULL);
   ASSERT(PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT(name != NULL);
+
+  /* fd 초기화 */
+  t->fd_table = NULL;
+  t->fd_cap   = 0;
 
   memset(t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;

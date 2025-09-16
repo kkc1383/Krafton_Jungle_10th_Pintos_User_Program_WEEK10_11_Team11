@@ -38,9 +38,12 @@ struct child_status {
   int exit_code;            // 자식 종료 코드
   bool exited;              // 종료 여부
   bool waited;              // 부모의 wait() 호출 여부
-  int ref_cnt;              // parent + child = 2 로 시작, 소유 카운트, 동기화용
+  int ref_cnt;               // parent + child = 2 로 시작, 소유 카운트, 동기화용
   struct semaphore sema;    // parent가 wait()에서 대기, 부모 wait일시 down, 자식 exit시 up
-  struct list_elem elem;    // parent->children 에 매달림, 부모의 children list 용
+  struct semaphore load_sema; // load 완료 표시 부모에게
+  bool load_done;             // load 한번만
+  bool load_ok;               // load완료 확인
+  struct list_elem elem;      // parent->children 에 매달림, 부모의 children list 용
 };
 
 
@@ -130,6 +133,14 @@ struct thread {
   int exit_status;  /* 상태 */
   bool proc_inited;  /* init 한번만 하려고 */
 
+  /* 시스템 콜 */
+  struct lock filesys_lock;
+
+  struct file **fd_table;   // 파일 포인터 배열
+  int fd_cap;               // 한계
+
+  struct file *exec_file;   // exec 파일 관리용
+  
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
