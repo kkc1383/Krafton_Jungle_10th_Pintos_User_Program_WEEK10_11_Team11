@@ -40,6 +40,10 @@ void validate_str(const char *str);
 void validate_buffer_size(void *buffer, unsigned size);
 struct file *fd_to_file(int fd);
 void sys_exit(int status);
+
+int sys_fork(const char *thread_name, struct intr_frame *f);
+int sys_exec(const char *cmd_line);
+int sys_wait(int pid);
 bool sys_create(const char *file, unsigned initial_size);
 bool sys_remove(const char *file);
 int sys_open(const char *file);
@@ -75,13 +79,14 @@ void syscall_handler(struct intr_frame *f UNUSED) {
       sys_exit(ARG_1(f));
       break;
     case SYS_FORK:
-      sys_fork();
+      const char *name = ARG_1(f);
+      f->R.rax = sys_fork(name, f);
       break;
     case SYS_EXEC:
-      sys_exec();
+      f->R.rax = sys_exec(ARG_1(f));
       break;
     case SYS_WAIT:
-      sys_wait();
+      f->R.rax = sys_wait(ARG_1(f));
       break;
     case SYS_CREATE:
       f->R.rax = sys_create(ARG_1(f), ARG_2(f));
@@ -165,9 +170,16 @@ void sys_exit(int status) {
   printf("%s: exit(%d)\n", t->name, status);
   thread_exit();
 }
-void sys_fork() {}
-void sys_exec() {}
-void sys_wait() {}
+
+/* 프로세스 시스템콜 */
+int sys_fork(const char *thread_name, struct intr_frame *f) {
+  validate_str(thread_name);
+  return process_fork(thread_name, f);
+}
+int sys_exec(const char *cmd_line) {}
+int sys_wait(int pid) { return process_wait(pid); }
+
+/* 파일IO 시스템콜 */
 bool sys_create(const char *file, unsigned initial_size) {
   validate_str(file);
   bool res = 0;

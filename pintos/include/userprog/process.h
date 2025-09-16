@@ -9,6 +9,12 @@ struct passing_arguments {
     struct child_process *cp;
 };
 
+struct fork_aux {
+    struct intr_frame if_;
+    struct thread *parent;
+    struct child_process *cp;
+};
+
 tid_t process_create_initd (const char *file_name);
 tid_t process_fork (const char *name, struct intr_frame *if_);
 int process_exec (void *f_name);
