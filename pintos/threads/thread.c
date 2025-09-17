@@ -11,6 +11,7 @@
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
@@ -135,8 +136,7 @@ void thread_init(void) {
   list_init(&initial_thread->child_list);
   lock_init(&initial_thread->children_lock);
 
-  /* fd_table 초기화 */
-  memset(initial_thread->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
+  // memset(initial_thread->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
 
   if (thread_mlfqs) {
     mlfqs_update_priority(initial_thread);  // 첫 main쓰레드 priority 설정(PRI_MAX)
@@ -154,6 +154,11 @@ void thread_init(void) {
 /* Starts preemptive thread scheduling by enabling interrupts.
    Also creates the idle thread. */
 void thread_start(void) {
+  /* initial_thread fd_table 초기화 */
+  initial_thread->fd_table = (struct file **)malloc(MAX_FILES * (sizeof(struct file *)));
+  initial_thread->fd_size = MAX_FILES;
+  initial_thread->fd_max = 1;
+
   /* Create the idle thread. */
   struct semaphore idle_started;
   sema_init(&idle_started, 0);
@@ -248,7 +253,11 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     }
     mlfqs_update_priority(t);  // priority 공식으로 계산
   }
-  memset(t->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
+
+  /* fd table 초기화 */
+  t->fd_table = (struct file **)calloc(parent->fd_size, (sizeof(struct file *)));
+  t->fd_size = parent->fd_size;
+  t->fd_max = 1;
   // fd 복제는 file_duplicate에서 진행
 
   /* Call the kernel_thread if it scheduled.

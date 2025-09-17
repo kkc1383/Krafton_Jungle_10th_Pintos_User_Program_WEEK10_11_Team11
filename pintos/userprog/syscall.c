@@ -10,6 +10,7 @@
 #include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/loader.h"
+#include "threads/malloc.h"
 #include "threads/mmu.h"
 #include "threads/thread.h"
 #include "userprog/gdt.h"
@@ -34,7 +35,7 @@ static unsigned system_tell(int fd);
 static void system_close(int fd);
 static void validate_user_string(const char *str);
 static int allocate_fd(void);
-
+static int expend_fd_table(struct thread *curr);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -48,14 +49,14 @@ static int allocate_fd(void);
 #define MSR_LSTAR 0xc0000082        /* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 struct lock filesys_lock;           /* to access filesys function */
-struct lock fd_lock;                /* to allocate file descriptor number  */
+// struct lock fd_lock;                /* to allocate file descriptor number  */
 
 void syscall_init(void) {
   write_msr(MSR_STAR, ((uint64_t)SEL_UCSEG - 0x10) << 48 | ((uint64_t)SEL_KCSEG) << 32);
   write_msr(MSR_LSTAR, (uint64_t)syscall_entry);
 
   lock_init(&filesys_lock);
-  lock_init(&fd_lock);
+  // lock_init(&fd_lock);
   /* The interrupt service rountine should not serve any interrupts
    * until the syscall_entry swaps the userland stack to the kernel
    * mode stack. Therefore, we masked the FLAG_FL. */
@@ -137,7 +138,6 @@ void system_exit(int status) {
   }
   lock_release(&parent->children_lock);  // child_list 순회하기 때문에
 
-  // printf("%s: exit(%d), pid : %d\n", thread_current()->name, status, curr->tid);
   printf("%s: exit(%d)\n", thread_current()->name, status);
   thread_exit();
 }
@@ -151,10 +151,7 @@ static int system_exec(const char *cmdd_line) {
   // never reached!!
   return result;
 }
-static int system_wait(pid_t pid) {
-  // printf("wait : pid is %d\n", pid);
-  return process_wait(pid);
-}
+static int system_wait(pid_t pid) { return process_wait(pid); }
 static bool system_create(const char *file, unsigned initial_size) {
   // 대신에 락이 걸려야함
   validate_user_string(file);  // file이 널 문자인지, 혹은 페이지 테이블에 없는 주소인지
@@ -176,20 +173,30 @@ static int system_open(const char *file) {
   lock_acquire(&filesys_lock);                  // 동시접근을 막기 위해
   struct file *open_file = filesys_open(file);  // 파일 열기
   lock_release(&filesys_lock);
-  if (open_file) {                // 파일을 제대로 열었다면
-    int open_fd = allocate_fd();  // 파일 디스크립터 번호 할당
+  if (open_file) {  // 파일을 제대로 열었다면
+    // 1. fd_max+1>=fd_size 인지 확인 <- 이거면 부족하다는거
+    // 2. 부족하지 않다면 curr->fd_table[++fd_max]=open_file;
+    // 3. 부족하다면 확장 한다음 2를 실행
+    // 4. 확장에 실패했다면 -1 리턴
     struct thread *curr = thread_current();
-    curr->fd_table[open_fd] = open_file;  // 해당 쓰레드의 파일 디스크립터 테이블 채우기
+    while (curr->fd_max + 1 >= curr->fd_size) {  // fd_table이 부족할 경우(혹시 몰라 while로 가둠)
+      if ((expend_fd_table(curr) < 0)) return -1;  // 확장에 실패했다면 -1 리턴
+      //확장에 성공했다면
+      // printf("success expend %d\n", curr->fd_size);
+    }
+    curr->fd_max++;
+    curr->fd_table[curr->fd_max] = open_file;  // 해당 쓰레드의 파일 디스크립터 테이블 채우기
+    // printf("open file name : %s fd : %d\n", file, curr->fd_max);
     if (!strcmp(curr->name, file))
       file_deny_write(open_file);  // 본인 자신을 열려고 하면 deny_write설정
-    return open_fd;                // 파일 디스크립터 번호 반환
+    return curr->fd_max;           // 파일 디스크립터 번호 반환
   } else
     return -1;  // 제대로 못열었으면 -1 반환
 }
 static int system_filesize(int fd) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
   int file_size;
   struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct file *open_file = curr->fd_table[fd];
   if (!open_file) return -1;
   lock_acquire(&filesys_lock);
@@ -198,13 +205,13 @@ static int system_filesize(int fd) {
   return file_size;
 }
 static int system_read(int fd, void *buffer, unsigned size) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
+  struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int read_bytes;
   validate_user_string(buffer);
   if (fd == 0) {  //표준 입력일 경우
     read_bytes = input_getc();
   } else {
-    struct thread *curr = thread_current();
     struct file *read_file = curr->fd_table[fd];
     if (!read_file) return -1;
     lock_acquire(&filesys_lock);
@@ -214,14 +221,14 @@ static int system_read(int fd, void *buffer, unsigned size) {
   return read_bytes;
 }
 static int system_write(int fd, const void *buffer, unsigned size) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
+  struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int write_bytes;
   validate_user_string(buffer);  // buffer가 커널 영역이거나 NULL일경우 시스템 종료
   if (fd == 1) {                 // 표준 출력일 경우
     putbuf(buffer, size);
     return size;
   } else {
-    struct thread *curr = thread_current();
     struct file *write_file = curr->fd_table[fd];
     /* Exception Handle */
     if (!write_file) return -1;
@@ -234,8 +241,8 @@ static int system_write(int fd, const void *buffer, unsigned size) {
   }
 }
 static void system_seek(int fd, unsigned position) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct file *seek_file = curr->fd_table[fd];
   if (!seek_file) return -1;
   lock_acquire(&filesys_lock);
@@ -243,8 +250,8 @@ static void system_seek(int fd, unsigned position) {
   lock_release(&filesys_lock);
 }
 static unsigned system_tell(int fd) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct file *tell_file = curr->fd_table[fd];
   unsigned tell_bytes;
   if (!tell_file) return -1;
@@ -254,8 +261,8 @@ static unsigned system_tell(int fd) {
   return tell_bytes;
 }
 static void system_close(int fd) {
-  if (fd < 0 || fd > 64) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct thread *curr = thread_current();
+  if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   struct file *close_file = curr->fd_table[fd];
   if (!close_file) return;
 
@@ -271,14 +278,12 @@ static void validate_user_string(const char *str) {
     system_exit(-1);
   }
 }
-/* Returns a tid to use for a new thread. */
-static int allocate_fd(void) {
-  static int next_fd = 2;
-  int tid;
-
-  lock_acquire(&fd_lock);
-  tid = next_fd++;
-  lock_release(&fd_lock);
-
-  return tid;
+static int expend_fd_table(struct thread *curr) {
+  // fd MAX_FILES개 만큼만 확장
+  curr->fd_table = realloc(curr->fd_table, sizeof(struct file *) * (curr->fd_size + MAX_FILES));
+  if (curr->fd_table == NULL) return -1;  //재할당에 실패했을 경우
+  curr->fd_size += MAX_FILES;
+  return 0;  // 성공적일 경우 0반환
 }
+static struct list *list_return(struct list *t) { return t; }
+static struct file *file_return(struct file *f) { return f; }

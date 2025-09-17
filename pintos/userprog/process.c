@@ -91,8 +91,28 @@ tid_t process_fork(const char *name, struct intr_frame *if_) {
   sema_init(&aux.fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
   tid_t tid;
   tid = thread_create(name, PRI_DEFAULT, __do_fork, &aux);
-  if (tid == TID_ERROR) free(&aux);
-  sema_down(&aux.fork_sema);
+  // thread_create 가 실패했을 경우
+  if (tid == TID_ERROR) {
+    free(&aux);
+    return TID_ERROR;
+  }
+  sema_down(&aux.fork_sema);  // fork가 실패했을 경우 얘를 탈출할수 있게 해야함.
+  // tid 검사 (fork 루틴 중 실패했을 경우)
+  lock_acquire(&aux.parent->children_lock);
+  // child_list 순회
+  struct list_elem *e;
+  for (e = list_begin(&aux.parent->child_list); e != list_end(&aux.parent->child_list);
+       e = list_next(e)) {
+    struct child_info *child = list_entry(e, struct child_info, child_elem);
+    if (child->child_tid == tid) {
+      if (child->has_exited) {  // 자식이 종료되었다면
+        tid = TID_ERROR;
+        break;
+      }
+    }
+  }
+  lock_release(&aux.parent->children_lock);
+
   return tid;
 }
 
@@ -165,15 +185,23 @@ static void __do_fork(struct fork_aux *aux) {
    * TODO:       from the fork() until this function successfully duplicates
    * TODO:       the resources of parent.*/
 
-  for (int i = 2; i < MAX_FILES; i++) {
-    if (parent->fd_table[i]) current->fd_table[i] = file_duplicate(parent->fd_table[i]);
+  for (int i = 2; i < parent->fd_max; i++) {
+    if (parent->fd_table[i]) {
+      struct file *dup_file = file_duplicate(parent->fd_table[i]);
+      if (dup_file) {
+        current->fd_table[i] = dup_file;
+        current->fd_max = i;
+      } else
+        goto error;
+    }
   }
   // process_init();
   sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
-  thread_exit();
+  sema_up(&aux->fork_sema);
+  system_exit(-1);
 }
 
 /* Switch the current execution context to the f_name.
@@ -255,7 +283,9 @@ int process_wait(tid_t child_tid) {
   // 종료되었으면
   /* 여기서 수거작업이 이루어지면 됨 */
   list_remove(&target_child->child_elem);  // child_list에서 삭제
-  return target_child->exit_status;
+  int child_exit_status = target_child->exit_status;
+  free(target_child);
+  return child_exit_status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -266,6 +296,11 @@ void process_exit(void) {
    * TODO: We recommend you to implement process resource cleanup here. */
 
   process_cleanup();
+  struct thread *curr = thread_current();
+  for (int i = 0; i <= curr->fd_max; i++) {
+    file_close(curr->fd_table[i]);
+  }
+  free(curr->fd_table);  // fd table 반환
 }
 
 /* Free the current process's resources. */
