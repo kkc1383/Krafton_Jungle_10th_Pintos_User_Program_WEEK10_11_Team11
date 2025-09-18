@@ -321,14 +321,28 @@ __do_fork (void *aux) {
 		current->fd_cap = parent->fd_cap;
 
 		current->fd_table = palloc_get_page(PAL_ZERO);
-		current->fd_table_from_palloc = true;
 		if (!current->fd_table) goto error;
+		current->fd_table_from_palloc = true;
 
 		for (int i = 0; i < parent->fd_cap; i++) {
 			struct file *p = parent->fd_table[i];
   	      	if (!p) continue;
-			current->fd_table[i] = p;
-			fdref_inc(p);
+			
+			if (p == (struct file*)-1 || p == (struct file*)-2) {
+				current->fd_table[i] = p;
+				continue;
+			}
+
+			/* 일반 파일: 자식이 독립 오프셋을 갖도록 복제 */
+			struct file *nf = file_duplicate(p);
+			if (!nf) goto fork_rollback;
+			if (!fdref_inc(nf)) {
+				lock_acquire(&filesys_lock);
+				file_close(nf);
+				lock_release(&filesys_lock);
+				goto fork_rollback;
+			}
+			current->fd_table[i] = nf; 
 		}
 	}
 
@@ -341,6 +355,20 @@ __do_fork (void *aux) {
 	/* Finally, switch to the newly created process. */
 	/* 마지막으로 새로 생성한 프로세스로 전환한다. */
 	do_iret (&if_);
+fork_rollback:
+	for (int j = 0; j < parent->fd_cap; j++) {
+		struct file *q = current->fd_table ? current->fd_table[j] : NULL;
+		if (!q || q == (struct file*)-1 || q == (struct file*)-2) continue;
+		current->fd_table[j] = NULL;
+		fdref_dec(q);                                // ref테이블에 올라간 것만 dec
+	}
+	if (current->fd_table) {
+	  palloc_free_page(current->fd_table);
+	  current->fd_table = NULL;
+	  current->fd_cap = 0;
+	  current->fd_table_from_palloc = false;
+	}
+	goto error;
 error:
 	cs->load_ok = false;
 	cs->load_done = true;
@@ -558,52 +586,55 @@ process_exit (void) {
 	 * TODO: 프로세스 자원 해제를 여기에서 구현하는 것을 권장한다. */
 	struct thread *cur = thread_current ();
 
-	/* 자원 정리 */
-	if (cur->fd_table) {
-		for (int i = 2; i < cur->fd_cap; i++) {
-			struct file *p = cur->fd_table[i];
-			if (!p) continue;
-			cur->fd_table[i] = NULL;
-			fdref_dec(p);
+
+		if (cur->fd_table) {
+			for (int i = 0; i < cur->fd_cap; i++) {
+				struct file *p = cur->fd_table ? cur->fd_table[i] : NULL;
+				if (!p) continue;
+				cur->fd_table[i] = NULL;
+				fdref_dec(p);
+			}
+		}
+
+		if (cur->exec_file) {
+			file_allow_write(cur->exec_file);
+			file_close(cur->exec_file);
+			cur->exec_file = NULL;
+		}
+
+		if (cur->fd_table) {
+			if (cur->fd_table_from_palloc) palloc_free_page(cur->fd_table);
+			else free(cur->fd_table);
+			cur->fd_table = NULL;
+			cur->fd_cap = 0;
+			cur->fd_table_from_palloc = false;
+		}
+
+	/* 유저 프로세스 에서만 */
+	if (cur->proc_inited) {
+		/* 스펙 요구 종료 메시지 */
+		printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+
+
+		if (cur->my_status) {
+			cur->my_status->exit_code = cur->exit_status;
+			cur->my_status->exited = true;
+			sema_up(&cur->my_status->sema);
+
+			if (--cur->my_status->ref_cnt == 0)
+				free(cur->my_status);
+			cur->my_status = NULL;
+		}
+
+		/* 부모가 wait 안하고 죽는 불상사 방지용 */
+		/* 자식들의 부모 소유 해제 */
+		while (!list_empty(&cur->children)) {
+			struct list_elem *e = list_pop_front(&cur->children);	
+			struct child_status *cs = list_entry(e, struct child_status, elem);
+			if (--cs->ref_cnt == 0)
+				free(cs);
 		}
 	}
-
-	if (cur->exec_file) {
-		file_allow_write(cur->exec_file);
-		file_close(cur->exec_file);
-		cur->exec_file = NULL;
-	}
-
-	if (cur->fd_table) {
-		if (cur->fd_table_from_palloc) palloc_free_page(cur->fd_table);
-		else free(cur->fd_table);
-		cur->fd_table = NULL;
-		cur->fd_cap = 0;
-		cur->fd_table_from_palloc = false;
-	}
-
-	/* 스펙 요구 종료 메시지 */
-	printf("%s: exit(%d)\n", cur->name, cur->exit_status);
-
-	if (cur->my_status) {
-		cur->my_status->exit_code = cur->exit_status;
-    	cur->my_status->exited = true;
-    	sema_up(&cur->my_status->sema);
-
-		if (--cur->my_status->ref_cnt == 0)
-			free(cur->my_status);
-		cur->my_status = NULL;
-	}
-
-	/* 부모가 wait 안하고 죽는 불상사 방지용 */
-	/* 자식들의 부모 소유 해제 */
-	while (!list_empty(&cur->children)) {
-		struct list_elem *e = list_pop_front(&cur->children);
-		struct child_status *cs = list_entry(e, struct child_status, elem);
-		if (--cs->ref_cnt == 0)
-			free(cs);
-	}
-	
 	process_cleanup ();
 }
 

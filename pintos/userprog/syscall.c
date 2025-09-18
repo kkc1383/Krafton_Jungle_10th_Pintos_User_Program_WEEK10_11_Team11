@@ -18,8 +18,9 @@
 #include "userprog/process.h"
 #include "threads/synch.h"
 #include "list.h"
+#include "lib/kernel/hash.h"
 
-static struct lock filesys_lock;
+struct lock filesys_lock;
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -73,21 +74,21 @@ static void copy_in(void *kdst, const void *usrc, size_t n);
 static void copy_out(void *udst, const void *ksrc, size_t n);
 static int  fd_alloc(struct file *f);   // 빈 슬롯 찾아 file* 넣고 fd 반환
 
+static unsigned file_ref_hash(const struct hash_elem *e, void *aux);
+static bool file_ref_less(const struct hash_elem *a, const struct hash_elem *b, void *aux);
 static struct file_ref *ref_find(struct file *fp);
-
-#include "threads/synch.h"
-#include "list.h"
 
 // dup2
 struct file_ref {
   struct file *fp;
   int refcnt;
-  struct list_elem elem;
+  // struct list_elem elem;
+  struct hash_elem elem;
 };
 
-static struct list file_ref_list;
-static struct lock  file_ref_lock;
-
+// static struct list file_ref_list;
+static struct lock file_ref_lock;
+static struct hash file_ref_ht;
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -128,8 +129,9 @@ syscall_init (void) {
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 
   lock_init(&filesys_lock);
-  list_init(&file_ref_list);
+  // list_init(&file_ref_list);
   lock_init(&file_ref_lock);
+  hash_init(&file_ref_ht, file_ref_hash, file_ref_less, NULL);
 }
 
 /* The main system call interface */
@@ -267,7 +269,13 @@ system_open(const char *file) {
     return -1;
   }
 
-  fdref_inc(f);
+  if (!fdref_inc(f)) {                  // 실패 시
+    thread_current()->fd_table[fd] = NULL;
+    lock_acquire(&filesys_lock);
+    file_close(f);                      // 직접 닫기
+    lock_release(&filesys_lock);
+    return -1;
+  }
   return fd;
 }
 
@@ -397,18 +405,21 @@ system_seek(int fd, unsigned position) {
 static int
 system_dup2(int oldfd, int newfd) {
   struct thread *t = thread_current();
+  
   if (oldfd < 0 || oldfd >= t->fd_cap) return -1;
+  if (oldfd >= t->fd_cap || newfd >= t->fd_cap) return -1;
+  if (oldfd == newfd) return newfd;
+
   struct file *oldf = t->fd_table[oldfd];
   if (!oldf) return -1;
 
-  if (newfd < 0) return -1;
-  if (newfd >= t->fd_cap) return -1;
-  if (oldfd == newfd) return newfd;
+  if (t->fd_table[newfd] == oldf) return newfd;
+
+  if (!fdref_inc(oldf)) return -1;
 
   if (t->fd_table[newfd]) system_close(newfd);
 
   t->fd_table[newfd] = oldf;
-  fdref_inc(oldf);
   return newfd;
 }
 
@@ -537,32 +548,37 @@ static int fd_alloc(struct file *f) {
 }
 
 
-static struct
-file_ref *ref_find(struct file *fp) {
-  struct list_elem *e;
-  for (e = list_begin(&file_ref_list); e != list_end(&file_ref_list); e = list_next(e)) {
-    struct file_ref *r = list_entry(e, struct file_ref, elem);
-    if (r->fp == fp) return r;
-  }
-  return NULL;
-}
+// static struct
+// file_ref *ref_find(struct file *fp) {
+//   struct list_elem *e;
+//   for (e = list_begin(&file_ref_list); e != list_end(&file_ref_list); e = list_next(e)) {
+//     struct file_ref *r = list_entry(e, struct file_ref, elem);
+//     if (r->fp == fp) return r;
+//   }
+//   return NULL;
+// }
 
 // 카운트 up
-void
+bool
 fdref_inc(struct file *fp) {
-  /* 제외를 이따구로 해놓은 이유는 매크로는 다른곳에 정의 안되어 있어서 무식하게 해놓음 */
-  if (fp == (struct file*)-1 || fp == (struct file*)-2) return; 
+  if (fp == (struct file*)-1 || fp == (struct file*)-2) return true; 
   lock_acquire(&file_ref_lock);
   struct file_ref *r = ref_find(fp);
   if (!r) {
     r = malloc(sizeof *r);
+    if (!r) {                      // 안전 처리
+      lock_release(&file_ref_lock);
+      return false;
+    }
     r->fp = fp;
     r->refcnt = 1;
-    list_push_back(&file_ref_list, &r->elem);
+    hash_insert(&file_ref_ht, &r->elem);
+    // list_push_back(&file_ref_list, &r->elem);
   } else {
     r->refcnt++;
   }
   lock_release(&file_ref_lock);
+  return true;
 }
 
 // 카운트 down
@@ -574,7 +590,8 @@ fdref_dec(struct file *fp) {
   struct file_ref *r = ref_find(fp);
   ASSERT(r != NULL);
   if (--r->refcnt == 0) {
-    list_remove(&r->elem);
+    // list_remove(&r->elem);
+    hash_delete(&file_ref_ht, &r->elem);
     lock_release(&file_ref_lock);
     // 마지막 참조 해제 시 실제 close
     lock_acquire(&filesys_lock);
@@ -584,4 +601,20 @@ fdref_dec(struct file *fp) {
     return;
   }
   lock_release(&file_ref_lock);
+}
+
+
+static unsigned file_ref_hash(const struct hash_elem *e, void *aux) {
+  const struct file_ref *r = hash_entry(e, struct file_ref, elem);
+  return hash_bytes(&r->fp, sizeof r->fp);
+}
+static bool file_ref_less(const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+  const struct file_ref *ra = hash_entry(a, struct file_ref, elem);
+  const struct file_ref *rb = hash_entry(b, struct file_ref, elem);
+  return ra->fp < rb->fp;
+}
+static struct file_ref *ref_find(struct file *fp) {
+  struct file_ref key; key.fp = fp;
+  struct hash_elem *e = hash_find(&file_ref_ht, &key.elem);
+  return e ? hash_entry(e, struct file_ref, elem) : NULL;
 }

@@ -43,7 +43,9 @@
         "list.h": "c",
         "inttypes.h": "c",
         "typeinfo": "c",
-        "stdbool.h": "c"
+        "stdbool.h": "c",
+        "mmu.h": "c",
+        "hash.h": "c"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }
