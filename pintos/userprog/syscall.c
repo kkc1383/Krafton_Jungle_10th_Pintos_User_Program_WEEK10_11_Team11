@@ -38,6 +38,9 @@ void syscall_handler (struct intr_frame *);
 #define FIRST_FD 2
 #define FD_GROW_STEP 32 
 
+#define STDIN_FD  ((struct file*)-1)
+#define STDOUT_FD ((struct file*)-2)
+
 /* 프로토 타입 */
 static void system_halt(void) NO_RETURN;
 
@@ -60,6 +63,8 @@ static long  system_write(int fd, const void *buffer, unsigned size);
 static void system_seek(int fd, unsigned position);
 static unsigned system_tell(int fd);
 
+static int system_dup2(int oldfd, int newfd);
+
 /* 시스템콜 헬퍼 */
 static struct file *fd_get(int fd);
 static void assert_user_range(const void *uaddr, size_t size);
@@ -68,7 +73,20 @@ static void copy_in(void *kdst, const void *usrc, size_t n);
 static void copy_out(void *udst, const void *ksrc, size_t n);
 static int  fd_alloc(struct file *f);   // 빈 슬롯 찾아 file* 넣고 fd 반환
 
+static struct file_ref *ref_find(struct file *fp);
 
+#include "threads/synch.h"
+#include "list.h"
+
+// dup2
+struct file_ref {
+  struct file *fp;
+  int refcnt;
+  struct list_elem elem;
+};
+
+static struct list file_ref_list;
+static struct lock  file_ref_lock;
 
 /* System call.
  *
@@ -110,6 +128,8 @@ syscall_init (void) {
 			FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 
   lock_init(&filesys_lock);
+  list_init(&file_ref_list);
+  lock_init(&file_ref_lock);
 }
 
 /* The main system call interface */
@@ -139,6 +159,9 @@ void syscall_handler(struct intr_frame *f) {
 	  case SYS_SEEK:   system_seek((int)ARG0(f), (unsigned)ARG1(f)); break;
     case SYS_TELL:   RET(f, system_tell((int)ARG0(f))); break;
 
+    /* dup2 extra 과제 */
+    case SYS_DUP2:   RET(f, system_dup2((int)ARG0(f), (int)ARG1(f))); break;
+
     default:         system_exit(-1); __builtin_unreachable();
   }
 }
@@ -159,6 +182,7 @@ static unsigned
 system_tell(int fd) {
   struct file *f = fd_get(fd);
   if (f == NULL) return -1;
+  if (f == STDOUT_FD || f == STDIN_FD) return -1;
   
   lock_acquire(&filesys_lock);
   off_t pose = file_tell(f);
@@ -242,6 +266,8 @@ system_open(const char *file) {
     lock_release(&filesys_lock);
     return -1;
   }
+
+  fdref_inc(f);
   return fd;
 }
 
@@ -253,16 +279,15 @@ system_close(int fd) {
   struct file *f = t->fd_table[fd];
   if (f == NULL) return;
 
-  t->fd_table[fd] = NULL;                  // 먼저 테이블에서 제거
-  lock_acquire(&filesys_lock);
-  file_close(f);
-  lock_release(&filesys_lock);
+  if (!f) return;
+  t->fd_table[fd] = NULL;
+  fdref_dec(f);
 }
 
 static int
 system_filesize(int fd) {
-  if (fd == 1 || fd == 0) return -1;
   struct file *f = fd_get(fd);
+  if (f == STDOUT_FD || f == STDIN_FD) return -1;
   if (f == NULL) return -1;
 
   lock_acquire(&filesys_lock);
@@ -275,7 +300,10 @@ static int
 system_read(int fd, void *buffer, unsigned size) {
   if (size == 0) return 0;
 
-  if (fd == 0) {                                // 키보드
+  struct file *f = fd_get(fd);
+  if (!f) return -1;
+
+  if (f == STDIN_FD) {                                // 키보드
     for (unsigned i = 0; i < size; i++) {
       uint8_t key = (uint8_t)input_getc();
       copy_out((uint8_t*)buffer + i, &key, 1);
@@ -283,28 +311,26 @@ system_read(int fd, void *buffer, unsigned size) {
     return (int)size;
   }
 
-  if (fd == 1) return -1;
-
-  struct file *f = fd_get(fd);
-  if (!f) return -1;
+  if (f == STDOUT_FD) return -1;
 
   void *read_page = palloc_get_page(PAL_ZERO);
   if (read_page == NULL) return -1;
 
   int total = 0;
 
-  lock_acquire(&filesys_lock);
   while (total < (int)size) {
     size_t chunk = size - total;
     if (chunk > PGSIZE) chunk = PGSIZE;
 
+    lock_acquire(&filesys_lock);
     off_t n = file_read(f, read_page, (off_t)chunk);
+    lock_release(&filesys_lock);
+
     if (n <= 0) break;
 
     copy_out((uint8_t*)buffer + total, read_page, (size_t)n);
     total += (int)n;
   }
-  lock_release(&filesys_lock);
   palloc_free_page(read_page);
   return total;
 }
@@ -319,7 +345,10 @@ system_write (int fd, const void *buf, unsigned size) {
 
   long total = 0;
 
-  if (fd == 1) {              // STDOUT
+  struct file *f = fd_get(fd);
+  if (!f) { palloc_free_page(kpage); return -1; }
+
+  if (f == STDOUT_FD) {              // STDOUT
     while ((unsigned)total < size) {
       size_t chunk = size - (unsigned)total;
       if (chunk > PGSIZE) chunk = PGSIZE;
@@ -333,23 +362,22 @@ system_write (int fd, const void *buf, unsigned size) {
     return total;
   }
 
-  if (fd == 0) { palloc_free_page(kpage); return -1; }
+  if (f == STDIN_FD) { palloc_free_page(kpage); return -1; }
 
-  struct file *f = fd_get(fd);
-  if (!f) { palloc_free_page(kpage); return -1; }
-
-  lock_acquire(&filesys_lock);
   while ((unsigned)total < size) {
     size_t chunk = size - (unsigned)total;
     if (chunk > PGSIZE) chunk = PGSIZE;
 
     copy_in(kpage, (const uint8_t *)buf + total, chunk);
+
+    lock_acquire(&filesys_lock);
     off_t n = file_write(f, kpage, chunk);
+    lock_release(&filesys_lock);
+
     if (n <= 0) break;
     total += (long)n;
     if ((size_t)n < chunk) break;
   }
-  lock_release(&filesys_lock);
   palloc_free_page(kpage);
   return total;
 }
@@ -357,13 +385,31 @@ system_write (int fd, const void *buf, unsigned size) {
 
 static void
 system_seek(int fd, unsigned position) {
-  if (fd == 1 || fd == 0) return;
   struct file *f = fd_get(fd);
   if (f == NULL) return;
+  if (f == STDOUT_FD || f == STDIN_FD) return;
 
   lock_acquire(&filesys_lock);
   file_seek(f, position);
   lock_release(&filesys_lock);
+}
+
+static int
+system_dup2(int oldfd, int newfd) {
+  struct thread *t = thread_current();
+  if (oldfd < 0 || oldfd >= t->fd_cap) return -1;
+  struct file *oldf = t->fd_table[oldfd];
+  if (!oldf) return -1;
+
+  if (newfd < 0) return -1;
+  if (newfd >= t->fd_cap) return -1;
+  if (oldfd == newfd) return newfd;
+
+  if (t->fd_table[newfd]) system_close(newfd);
+
+  t->fd_table[newfd] = oldf;
+  fdref_inc(oldf);
+  return newfd;
 }
 
 // fd 뽑아보기
@@ -458,7 +504,8 @@ copy_out(void *udst, const void *ksrc, size_t n) {
   }
 }
 
-static bool fd_ensure_table(void) {
+static bool
+fd_ensure_table(void) {
   struct thread *t = thread_current();
   if (t->fd_table && t->fd_cap > 0) return true;
 
@@ -468,6 +515,10 @@ static bool fd_ensure_table(void) {
 
   t->fd_table = newtab;
   t->fd_cap   = PGSIZE / (int)sizeof(t->fd_table[0]);
+
+  t->fd_table[0] = STDIN_FD;
+  t->fd_table[1] = STDOUT_FD;
+
   t->fd_table_from_palloc = true;
   return true;
 }
@@ -483,4 +534,54 @@ static int fd_alloc(struct file *f) {
     }
   }
   return -1;
+}
+
+
+static struct
+file_ref *ref_find(struct file *fp) {
+  struct list_elem *e;
+  for (e = list_begin(&file_ref_list); e != list_end(&file_ref_list); e = list_next(e)) {
+    struct file_ref *r = list_entry(e, struct file_ref, elem);
+    if (r->fp == fp) return r;
+  }
+  return NULL;
+}
+
+// 카운트 up
+void
+fdref_inc(struct file *fp) {
+  /* 제외를 이따구로 해놓은 이유는 매크로는 다른곳에 정의 안되어 있어서 무식하게 해놓음 */
+  if (fp == (struct file*)-1 || fp == (struct file*)-2) return; 
+  lock_acquire(&file_ref_lock);
+  struct file_ref *r = ref_find(fp);
+  if (!r) {
+    r = malloc(sizeof *r);
+    r->fp = fp;
+    r->refcnt = 1;
+    list_push_back(&file_ref_list, &r->elem);
+  } else {
+    r->refcnt++;
+  }
+  lock_release(&file_ref_lock);
+}
+
+// 카운트 down
+void
+fdref_dec(struct file *fp) {
+  /* 얘도 마찬가지 */
+  if (fp == (struct file*)-1 || fp == (struct file*)-2) return;
+  lock_acquire(&file_ref_lock);
+  struct file_ref *r = ref_find(fp);
+  ASSERT(r != NULL);
+  if (--r->refcnt == 0) {
+    list_remove(&r->elem);
+    lock_release(&file_ref_lock);
+    // 마지막 참조 해제 시 실제 close
+    lock_acquire(&filesys_lock);
+    file_close(fp);
+    lock_release(&filesys_lock);
+    free(r);
+    return;
+  }
+  lock_release(&file_ref_lock);
 }

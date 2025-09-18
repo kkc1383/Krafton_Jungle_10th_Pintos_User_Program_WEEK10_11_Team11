@@ -7,6 +7,7 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -138,6 +139,17 @@ initd (void *aux_) {
 
 	struct exec_info *ei = aux_;
 	struct thread *cur = thread_current();
+
+	if (cur->fd_table == NULL || cur->fd_cap == 0) {
+    cur->fd_table = (struct file **)palloc_get_page(PAL_ZERO);
+    if (cur->fd_table == NULL)
+      PANIC("fd_table alloc failed");
+    cur->fd_cap = PGSIZE / (int)sizeof(cur->fd_table[0]);
+    cur->fd_table_from_palloc = true;
+
+    cur->fd_table[0] = (struct file *)-1; /* stdin */
+    cur->fd_table[1] = (struct file *)-2; /* stdout */
+  }
 
 	cur->my_status = ei->cs;
 
@@ -307,13 +319,16 @@ __do_fork (void *aux) {
 	 * TODO:       부모는 fork()에서 반환되어서는 안 된다. */
 	if (parent->fd_table && parent->fd_cap > 0) {
 		current->fd_cap = parent->fd_cap;
+
 		current->fd_table = palloc_get_page(PAL_ZERO);
 		current->fd_table_from_palloc = true;
 		if (!current->fd_table) goto error;
+
 		for (int i = 0; i < parent->fd_cap; i++) {
-			if (parent->fd_table[i]) {
-				current->fd_table[i] = file_duplicate(parent->fd_table[i]);
-			}
+			struct file *p = parent->fd_table[i];
+  	      	if (!p) continue;
+			current->fd_table[i] = p;
+			fdref_inc(p);
 		}
 	}
 
@@ -546,10 +561,10 @@ process_exit (void) {
 	/* 자원 정리 */
 	if (cur->fd_table) {
 		for (int i = 2; i < cur->fd_cap; i++) {
-			if (cur->fd_table[i]) {
-				file_close(cur->fd_table[i]);
-				cur->fd_table[i] = NULL;
-			}
+			struct file *p = cur->fd_table[i];
+			if (!p) continue;
+			cur->fd_table[i] = NULL;
+			fdref_dec(p);
 		}
 	}
 
