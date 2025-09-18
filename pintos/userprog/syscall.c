@@ -184,17 +184,15 @@ int sys_fork(const char *thread_name, struct intr_frame *f) {
 }
 int sys_exec(const char *cmd_line) {
   validate_str(cmd_line);
-  char *kern_cmd_line = malloc(strlen(cmd_line) + 1);
+  char *kern_cmd_line = palloc_get_page(0);
   memcpy(kern_cmd_line, cmd_line, strlen(cmd_line) + 1);
 
   int len = strlen(kern_cmd_line) + 1;
   struct passing_arguments *pargs = palloc_get_page(0);
   pargs->cp = palloc_get_page(0);
-  pargs->full_args = palloc_get_page(0);
-  pargs->file_name = palloc_get_page(0);
 
   memcpy(pargs->full_args, kern_cmd_line, len);
-  memcpy(pargs->file_name, kern_cmd_line, len);
+  memcpy(pargs->file_name, kern_cmd_line, FILE_NAME_LEN_MAX + 1);
   char *space = strchr(pargs->file_name, ' ');
   if (space) {
     *space = '\0';
@@ -204,9 +202,10 @@ int sys_exec(const char *cmd_line) {
 
   int res = process_exec(pargs);
   if (res < 0) {
-    free(kern_cmd_line);
+    palloc_free_page(kern_cmd_line);
     sys_exit(res);
   }
+  free(kern_cmd_line);
   NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
 }
 int sys_wait(int pid) { return process_wait(pid); }
@@ -239,7 +238,9 @@ int sys_open(const char *file) {
     return -1;
   }
   fd = t->next_fd++;
+  if (fd < FD_MAX) {
   t->fd_table[fd] = f;
+  }
   lock_release(&filesys_lock);
   return fd;
 }

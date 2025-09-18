@@ -19,6 +19,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "userprog/gdt.h"
+#include "userprog/syscall.h"
 #include "userprog/tss.h"
 
 #ifdef VM
@@ -29,8 +30,7 @@ static void process_cleanup(void);
 static bool load(const void *pargs, struct intr_frame *if_);
 static void initd(void *f_name);
 static void __do_fork(void *);
-void argument_passing(const char *args, struct intr_frame *if_);
-// struct child_process *find_child_process(struct thread *parent, tid_t tid);
+static bool argument_passing(const char *args, struct intr_frame *if_);
 
 /* General process initializer for initd and other process. */
 static void process_init(void) { struct thread *current = thread_current(); }
@@ -42,19 +42,15 @@ static void process_init(void) { struct thread *current = thread_current(); }
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t process_create_initd(const char *file_name) {
   tid_t tid;
-  int len = strlen(file_name) + 1;
   /* 인자전달 구조체 메모리 할당 */
-  // struct passing_arguments *pargs = malloc(sizeof(struct passing_arguments));
-  // pargs->cp = malloc(sizeof(struct child_process));
-  // pargs->full_args = malloc(len);
-  // pargs->file_name = malloc(len);
+  int len = strlen(file_name) + 1;
   struct passing_arguments *pargs = palloc_get_page(0);
   pargs->cp = palloc_get_page(0);
-  pargs->full_args = palloc_get_page(0);
-  pargs->file_name = palloc_get_page(0);
-
+  if (pargs == NULL || pargs->cp == NULL) {
+    return -1;
+  }
   memcpy(pargs->full_args, file_name, len);
-  memcpy(pargs->file_name, file_name, len);
+  memcpy(pargs->file_name, file_name, FILE_NAME_LEN_MAX + 1);
   char *space = strchr(pargs->file_name, ' ');
   if (space) {
     *space = '\0';
@@ -62,16 +58,13 @@ tid_t process_create_initd(const char *file_name) {
 
   /* 자식 프로세스 구조체 */
   sema_init(&pargs->cp->wait_sema, 0);
-  // sema_init(&pargs->cp->load_sema, 0);
   list_push_back(&thread_current()->children, &pargs->cp->elem);
   pargs->cp->tid = TID_ERROR;
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create(pargs->file_name, PRI_DEFAULT, initd, pargs);
   if (tid == TID_ERROR) {
-    // free(pargs->full_args);
-    // free(pargs->file_name);
-    // free(pargs->cp);
-    // free(pargs);
+    palloc_free_page(pargs->cp);
+    palloc_free_page(pargs);
   }
   pargs->cp->tid = tid;
 
@@ -84,8 +77,11 @@ static void initd(void *aux) {
   supplemental_page_table_init(&thread_current()->spt);
 #endif
   process_init();
-
-  if (process_exec(aux) < 0) PANIC("Fail to launch initd\n");
+  // 사용자 프로그램 실행 실패 시 해당 프로그램 exit()
+  // if (process_exec(aux) < 0) PANIC("Fail to launch initd\n");
+  if (process_exec(aux) < 0) {
+    sys_exit(-1);
+  }
   NOT_REACHED();
 }
 
@@ -99,13 +95,12 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   3. pml 복사
   4. fd_table 복사
   5. 부모-자식 동기화
-  => 1,5 - process_fork(), 나머지는 __do_fork()?
+  => 1,5 - process_fork(), 나머지는 __do_fork()
   */
-
   // hex_dump((uintptr_t)if_, if_, sizeof *if_, true);
   struct fork_aux *faux = palloc_get_page(0);
-  if (!faux) {
-    return TID_ERROR;
+  if (faux == NULL) {
+    return -1;
   }
   faux->parent = thread_current();
   faux->if_ = *if_;
@@ -116,17 +111,18 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
     return TID_ERROR;
   }
   /* 자식 프로세스 구조체 */
-  faux->cp = malloc(sizeof(struct child_process));
+  faux->cp = palloc_get_page(0);
+  if (faux->cp == NULL) {
+    return TID_ERROR;
+  }
   list_push_back(&thread_current()->children, &faux->cp->elem);
   faux->cp->tid = tid;
 
   /* 동기화 처리 - 자식 load 하는 동안 부모는 블락 */
   sema_init(&faux->cp->wait_sema, 0);
-  sema_down(&faux->cp->wait_sema);
+  sema_init(&faux->cp->fork_sema, 0);
+  sema_down(&faux->cp->fork_sema);
 
-  // free(faux->cp);
-  // palloc_free_page(faux);
-  /* Clone current thread to new thread. */
   return tid;
 }
 
@@ -193,7 +189,6 @@ static void __do_fork(void *aux) {
   /* 자식 프로세스 */
   struct child_process *cp = faux->cp;
   current->self_cp = cp;
-  bool succ = true;
 
   /* 1.문맥 복사 */
   memcpy(&current->tf, &faux->if_, sizeof(struct intr_frame));
@@ -224,17 +219,19 @@ static void __do_fork(void *aux) {
     }
     /* next_fd 이것도 그대로 복사해줘야 됨!! */
     current->next_fd = parent->next_fd;
-    current->fd_table[fd] = file_duplicate(f);
+    if (fd < FD_MAX) {
+      current->fd_table[fd] = file_duplicate(f);
+    }
   }
   // hex_dump((uintptr_t)&current->tf, &current->tf, sizeof(struct intr_frame), true);
-  // palloc_free_page(faux);
 
   /* 동기화 처리 및 문맥전환 */
-  if (succ) {
-    sema_up(&faux->cp->wait_sema);
-    do_iret(&current->tf);
-  }
+  sema_up(&faux->cp->fork_sema);
+  palloc_free_page(faux);
+  do_iret(&current->tf);
+
 error:
+  palloc_free_page(faux);
   thread_exit();
 }
 
@@ -260,14 +257,14 @@ int process_exec(void *pargs) {
 
   /* And then load the binary */
   success = load(pargs, &_if);
-  // curr->self_cp->load_success = success;
 
   /* If load failed, quit. */
-  if (!success) return -1;
+  if (!success) {
+    return -1;
+  }
 
-  /* exec load sema */
-  // sema_up(&curr->self_cp->load_sema);
-
+  /* 인자전달 구조체 free */
+  palloc_free_page(pa);
   /* Start switched process. */
   do_iret(&_if);
   NOT_REACHED();
@@ -286,7 +283,9 @@ int process_wait(tid_t child_tid UNUSED) {
   /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
-
+  if (child_tid < 0) {
+    return -1;
+  }
   struct child_process *cp = find_child_process(thread_current(), child_tid);
   if (cp == NULL) {
     return -1;
@@ -294,7 +293,6 @@ int process_wait(tid_t child_tid UNUSED) {
 
   sema_down(&cp->wait_sema);
   list_remove(&cp->elem);
-
   return cp->exit_status;
 }
 
@@ -306,12 +304,22 @@ void process_exit(void) {
   if (curr->self_cp != NULL) {
     sema_up(&curr->self_cp->wait_sema);
   }
+
   /* 실행중인 ELF 파일에 대한 쓰기권한 복귀 */
   if (curr->running_file != NULL) {
     file_allow_write(curr->running_file);
     file_close(curr->running_file);
     curr->running_file = NULL;
   }
+
+  /* fd 테이블 닫기 */
+  for (int fd = MIN_FD; fd < FD_MAX; fd++) {
+    if (curr->fd_table[fd] != NULL) {
+      file_close(curr->fd_table[fd]);
+      curr->fd_table[fd] = NULL;
+    }
+  }
+
   /* TODO: Your code goes here.
    * TODO: Implement process termination message (see
    * TODO: project2/process_termination.html).
@@ -502,13 +510,7 @@ static bool load(const void *pargs, struct intr_frame *if_) {
 
   /* TODO: Your code goes here.
    * TODO: Implement argument passing (see project2/argument_passing.html). */
-  argument_passing(pa->full_args, if_);
-
-  /* 전달한 인자 구조체 free */
-  // free(pa->full_args);
-  // free(pa->file_name);
-  // free(pa->cp);
-  // free(pa);
+  if (!argument_passing(pa->full_args, if_)) goto done;
 
   /* Start address. */
   if_->rip = ehdr.e_entry;
@@ -524,12 +526,15 @@ done:
 }
 
 /* 인자 전달 */
-void argument_passing(const char *args, struct intr_frame *if_) {
+static bool argument_passing(const char *args, struct intr_frame *if_) {
   char *token, *save_ptr;
   int argc = 0;
   char *argv[32];
   int args_len = strlen(args) + 1;
-  char *arguments = malloc(args_len);
+  char *arguments = palloc_get_page(0);
+  if (arguments == NULL) {
+    return false;
+  }
   memcpy(arguments, args, args_len);
 
   for (token = strtok_r(arguments, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
@@ -575,7 +580,8 @@ void argument_passing(const char *args, struct intr_frame *if_) {
   if_->rsp = rsp;
 
   // hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
-  free(arguments);
+  palloc_free_page(arguments);
+  return true;
 }
 
 /* 자식 프로세스 찾기 */

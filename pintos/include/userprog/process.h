@@ -2,10 +2,15 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include "threads/synch.h"
+
+/* 인지 전달 구조체 관련 */
+#define ARGS_LEN_MAX 2048
+#define FILE_NAME_LEN_MAX 14
 
 struct passing_arguments {
-    char *full_args;
-    char *file_name;
+    char full_args[ARGS_LEN_MAX];
+    char file_name[FILE_NAME_LEN_MAX + 1];
     struct child_process *cp;
 };
 

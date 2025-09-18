@@ -30,7 +30,9 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
-#define PD_MAX 128
+
+/* 파일 디스크립터 테이블 관련 */
+#define FD_MAX 128
 #define MIN_FD 2
 
 /* A kernel thread or user process.
@@ -117,7 +119,7 @@ struct thread {
   struct child_process *self_cp;
 
   /* 파일디스크립터 테이블 */
-  struct file *fd_table[PD_MAX];
+  struct file *fd_table[FD_MAX];
   int next_fd;  
 
   /* 실행중인 ELF파일 */
@@ -142,9 +144,8 @@ struct thread {
 struct child_process {
   tid_t tid;
   int exit_status;
-  int load_success;
-  struct semaphore wait_sema; /* 부모가 자식의 종료 동기화 */
-  struct semaphore load_sema; /* exec 동기화 */
+  struct semaphore wait_sema;
+  struct semaphore fork_sema;
   struct list_elem elem;
 };
 

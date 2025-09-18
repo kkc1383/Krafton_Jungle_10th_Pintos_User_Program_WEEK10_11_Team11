@@ -713,6 +713,7 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
+    palloc_free_page(victim->self_cp);
     palloc_free_page(victim);
   }
   thread_current()->status = status;
