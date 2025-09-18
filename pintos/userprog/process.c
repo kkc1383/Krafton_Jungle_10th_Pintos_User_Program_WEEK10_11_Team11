@@ -65,6 +65,8 @@ tid_t process_create_initd(const char *file_name) {
   if (tid == TID_ERROR) {
     palloc_free_page(pargs->cp);
     palloc_free_page(pargs);
+    pargs->cp = NULL;
+    pargs = NULL;
   }
   pargs->cp->tid = tid;
 
@@ -108,6 +110,7 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, faux);
   if (tid == TID_ERROR) {
     palloc_free_page(faux);
+    faux = NULL;
     return TID_ERROR;
   }
   /* 자식 프로세스 구조체 */
@@ -117,11 +120,18 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   }
   list_push_back(&thread_current()->children, &faux->cp->elem);
   faux->cp->tid = tid;
+  faux->cp->load_success = false;
 
   /* 동기화 처리 - 자식 load 하는 동안 부모는 블락 */
   sema_init(&faux->cp->wait_sema, 0);
   sema_init(&faux->cp->fork_sema, 0);
   sema_down(&faux->cp->fork_sema);
+
+  if (!faux->cp->load_success) {
+    return -1;
+  }
+  palloc_free_page(faux);
+  faux = NULL;
 
   return tid;
 }
@@ -212,27 +222,31 @@ static void __do_fork(void *aux) {
    * TODO:       the resources of parent.*/
 
   /* 3. 파일 디스크립터 복사 */
-  for (int fd = MIN_FD; fd < parent->next_fd; fd++) {
-    struct file *f = parent->fd_table[fd];
-    if (f == NULL) {
-      continue;
-    }
-    /* next_fd 이것도 그대로 복사해줘야 됨!! */
-    current->next_fd = parent->next_fd;
-    if (fd < FD_MAX) {
-      current->fd_table[fd] = file_duplicate(f);
+  for (int fd = START_FD; fd < FD_MAX; fd++) {
+    if (parent->fd_table[fd] != NULL) {
+      fd_allocate(current, file_duplicate(parent->fd_table[fd]));
     }
   }
   // hex_dump((uintptr_t)&current->tf, &current->tf, sizeof(struct intr_frame), true);
 
   /* 동기화 처리 및 문맥전환 */
+  faux->cp->load_success = true;
   sema_up(&faux->cp->fork_sema);
-  palloc_free_page(faux);
   do_iret(&current->tf);
 
 error:
-  palloc_free_page(faux);
-  thread_exit();
+  /* fork 실패 시 자원해제 */
+  process_cleanup();
+  for (int fd = 0; fd < FD_MAX; fd++) {
+    if (current->fd_table[fd] != NULL) {
+      file_close(current->fd_table[fd]);
+      current->fd_table[fd] = NULL;
+    }
+  }
+  sema_up(&faux->cp->fork_sema);
+  sys_exit(-1);
+
+  // thread_exit();
 }
 
 /* Switch the current execution context to the f_name.
@@ -265,6 +279,7 @@ int process_exec(void *pargs) {
 
   /* 인자전달 구조체 free */
   palloc_free_page(pa);
+  pa = NULL;
   /* Start switched process. */
   do_iret(&_if);
   NOT_REACHED();
@@ -292,8 +307,12 @@ int process_wait(tid_t child_tid UNUSED) {
   }
 
   sema_down(&cp->wait_sema);
+  int status = cp->exit_status;
+  // printf("[WAIT] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
   list_remove(&cp->elem);
-  return cp->exit_status;
+  // palloc_free_page(cp);
+  // cp = NULL;
+  return status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -302,7 +321,9 @@ void process_exit(void) {
 
   /* 자식이 종료되었으면 부모 스레드 실행재개 */
   if (curr->self_cp != NULL) {
+    // printf("[EXIT] %s (%d) -> %d\n", curr->name, curr->tid, curr->self_cp->exit_status);
     sema_up(&curr->self_cp->wait_sema);
+    curr->self_cp = NULL;
   }
 
   /* 실행중인 ELF 파일에 대한 쓰기권한 복귀 */
@@ -313,7 +334,7 @@ void process_exit(void) {
   }
 
   /* fd 테이블 닫기 */
-  for (int fd = MIN_FD; fd < FD_MAX; fd++) {
+  for (int fd = 0; fd < FD_MAX; fd++) {
     if (curr->fd_table[fd] != NULL) {
       file_close(curr->fd_table[fd]);
       curr->fd_table[fd] = NULL;
@@ -581,6 +602,7 @@ static bool argument_passing(const char *args, struct intr_frame *if_) {
 
   // hex_dump(if_->rsp, (void *)if_->rsp, USER_STACK - if_->rsp, true);
   palloc_free_page(arguments);
+  arguments = NULL;
   return true;
 }
 

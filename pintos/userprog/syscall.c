@@ -160,7 +160,7 @@ void validate_buffer_size(void *buffer, unsigned size) {
 /* fd -> file 유틸함수 */
 struct file *fd_to_file(int fd) {
   struct thread *t = thread_current();
-  if (fd < 0 || fd > t->next_fd) {
+  if (fd < 0 || fd > FD_MAX) {
     return NULL;
   }
   return t->fd_table[fd];
@@ -172,7 +172,6 @@ void sys_exit(int status) {
   if (t->self_cp != NULL) {
     t->self_cp->exit_status = status;
   }
-
   printf("%s: exit(%d)\n", t->name, status);
   thread_exit();
 }
@@ -203,12 +202,17 @@ int sys_exec(const char *cmd_line) {
   int res = process_exec(pargs);
   if (res < 0) {
     palloc_free_page(kern_cmd_line);
+    kern_cmd_line = NULL;
     sys_exit(res);
   }
-  free(kern_cmd_line);
+  palloc_free_page(kern_cmd_line);
+  kern_cmd_line = NULL;
   NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
 }
-int sys_wait(int pid) { return process_wait(pid); }
+int sys_wait(int pid) {
+  // printf("[시스템콜 - WAIT] %s, pid = %d\n", thread_current()->name, pid);
+  return process_wait(pid);
+}
 
 /* 파일IO 시스템콜 */
 bool sys_create(const char *file, unsigned initial_size) {
@@ -237,17 +241,14 @@ int sys_open(const char *file) {
     lock_release(&filesys_lock);
     return -1;
   }
-  fd = t->next_fd++;
-  if (fd < FD_MAX) {
-  t->fd_table[fd] = f;
-  }
+  fd = fd_allocate(t, f);
   lock_release(&filesys_lock);
   return fd;
 }
 int sys_filesize(int fd) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -263,7 +264,7 @@ int sys_read(int fd, void *buffer, unsigned size) {
   off_t bytes_read;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -281,7 +282,7 @@ int sys_write(int fd, const void *buffer, unsigned size) {
   off_t bytes_read;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (fd == 1) {
@@ -302,7 +303,7 @@ int sys_write(int fd, const void *buffer, unsigned size) {
 void sys_seek(int fd, unsigned position) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -316,7 +317,7 @@ unsigned sys_tell(int fd) {
   off_t position = -1;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -330,7 +331,7 @@ unsigned sys_tell(int fd) {
 void sys_close(int fd) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > t->next_fd || fd < 0) {
+  if (fd > FD_MAX || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {

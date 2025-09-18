@@ -33,7 +33,7 @@ typedef int tid_t;
 
 /* 파일 디스크립터 테이블 관련 */
 #define FD_MAX 128
-#define MIN_FD 2
+#define START_FD 2
 
 /* A kernel thread or user process.
  *
@@ -120,7 +120,6 @@ struct thread {
 
   /* 파일디스크립터 테이블 */
   struct file *fd_table[FD_MAX];
-  int next_fd;  
 
   /* 실행중인 ELF파일 */
   struct file *running_file;
@@ -144,6 +143,7 @@ struct thread {
 struct child_process {
   tid_t tid;
   int exit_status;
+  bool load_success;
   struct semaphore wait_sema;
   struct semaphore fork_sema;
   struct list_elem elem;
@@ -192,5 +192,6 @@ void mlfqs_update_priority(struct thread *t);
 bool thread_priority_less(const struct list_elem *, const struct list_elem *, void *);
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
+int fd_allocate(struct thread *t, struct file *f);
 
 #endif /* threads/thread.h */

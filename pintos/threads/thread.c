@@ -578,9 +578,6 @@ static void init_thread(struct thread *t, const char *name, int priority) {
 
   /* 자식 프로세스 구조체 리스트*/
   list_init(&t->children);
-
-  /* fd 테이블 인덱스 */
-  t->next_fd = MIN_FD;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -801,3 +798,14 @@ int max_priority_mlfqs_queue(void) {  // mlfqs에서 존재하는 ready_thread �
 }
 
 bool is_not_idle(struct thread *t) { return t != idle_thread; }
+
+/* 파일 디스크립터 할당기 */
+int fd_allocate(struct thread *t, struct file *f) {
+  for (int i = START_FD; i < FD_MAX; i++) {
+    if (t->fd_table[i] == NULL) {
+      t->fd_table[i] = f;
+      return i;
+    }
+  }
+  return -1;
+}
