@@ -307,7 +307,8 @@ __do_fork (void *aux) {
 	 * TODO:       부모는 fork()에서 반환되어서는 안 된다. */
 	if (parent->fd_table && parent->fd_cap > 0) {
 		current->fd_cap = parent->fd_cap;
-		current->fd_table = calloc(current->fd_cap, sizeof *current->fd_table);
+		current->fd_table = palloc_get_page(PAL_ZERO);
+		current->fd_table_from_palloc = true;
 		if (!current->fd_table) goto error;
 		for (int i = 0; i < parent->fd_cap; i++) {
 			if (parent->fd_table[i]) {
@@ -340,12 +341,20 @@ error:
 int
 process_exec (void *f_name) {
   	char *cmdline = f_name; 
+	struct thread *t = thread_current();
 
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
 	 * it stores the execution information to the member. */
 	/* 스레드 구조체 안의 intr_frame은 사용할 수 없다.
 	 * 현재 스레드가 리스케줄될 때 실행 정보가 그 멤버에 저장되기 때문이다. */
+
+	/* 기존 exec_file이 있다면 정리 (exec 체인 대비) */
+	if (t->exec_file) {
+		file_allow_write(t->exec_file);
+		file_close(t->exec_file);
+		t->exec_file = NULL;
+	}
 
 	 /* 유저모드용 세그먼트 셀렉터/플래그 셋업 */
 	struct intr_frame _if;
@@ -355,8 +364,6 @@ process_exec (void *f_name) {
 
 	process_cleanup();
 
-	struct thread *t = thread_current();
-	
 	/* 커맨드라인 토큰화: prog + argv[] */
 	char *save_ptr;
 	char *argv_k[64];           // 64개 제한
@@ -536,7 +543,7 @@ process_exit (void) {
 	 * TODO: 프로세스 자원 해제를 여기에서 구현하는 것을 권장한다. */
 	struct thread *cur = thread_current ();
 
-	/* (추가 자원 정리: 실행 파일 write deny 해제, 열린 파일 닫기 등은 나중에) */
+	/* 자원 정리 */
 	if (cur->fd_table) {
 		for (int i = 2; i < cur->fd_cap; i++) {
 			if (cur->fd_table[i]) {
@@ -550,6 +557,14 @@ process_exit (void) {
 		file_allow_write(cur->exec_file);
 		file_close(cur->exec_file);
 		cur->exec_file = NULL;
+	}
+
+	if (cur->fd_table) {
+		if (cur->fd_table_from_palloc) palloc_free_page(cur->fd_table);
+		else free(cur->fd_table);
+		cur->fd_table = NULL;
+		cur->fd_cap = 0;
+		cur->fd_table_from_palloc = false;
 	}
 
 	/* 스펙 요구 종료 메시지 */

@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <syscall-nr.h>
-#include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "userprog/gdt.h"
@@ -41,7 +40,6 @@ void syscall_handler (struct intr_frame *);
 
 /* 프로토 타입 */
 static void system_halt(void) NO_RETURN;
-static void system_exit (int status) NO_RETURN;
 
 static tid_t system_fork(const char *thread_name, struct intr_frame *parent_if);
 
@@ -149,7 +147,7 @@ void syscall_handler(struct intr_frame *f) {
 static void
 system_halt(void) { power_off(); __builtin_unreachable(); }
 
-static void
+void
 system_exit (int status) {
 	struct thread *cur = thread_current();
 	cur->exit_status = status;
@@ -157,55 +155,8 @@ system_exit (int status) {
 	__builtin_unreachable();
 }
 
-
-static long
-system_write (int fd, const void *buf, unsigned size) {
-  if (size == 0) return 0;
-  if (buf == NULL) system_exit(-1);
-
-  void *kpage = palloc_get_page(0);
-  if (!kpage) return -1;
-
-  long total = 0;
-
-  if (fd == 1) {              // STDOUT
-    while ((unsigned)total < size) {
-      size_t chunk = size - (unsigned)total;
-      if (chunk > PGSIZE) chunk = PGSIZE;
-
-      copy_in(kpage, (const uint8_t *)buf + total, chunk);
-      putbuf((const char *)kpage, chunk);
-
-      total += (long)chunk;
-    }
-    palloc_free_page(kpage);
-    return total;
-  }
-
-  if (fd == 0) { palloc_free_page(kpage); return -1; }
-
-  struct file *f = fd_get(fd);
-  if (!f) { palloc_free_page(kpage); return -1; }
-
-  lock_acquire(&filesys_lock);
-  while ((unsigned)total < size) {
-    size_t chunk = size - (unsigned)total;
-    if (chunk > PGSIZE) chunk = PGSIZE;
-
-    copy_in(kpage, (const uint8_t *)buf + total, chunk);
-    off_t n = file_write(f, kpage, chunk);
-    if (n <= 0) break;
-    total += (long)n;
-    if ((size_t)n < chunk) break;
-  }
-  lock_release(&filesys_lock);
-  palloc_free_page(kpage);
-  return total;
-}
-
 static unsigned
 system_tell(int fd) {
-  if (fd == 1 || fd == 0) return -1;
   struct file *f = fd_get(fd);
   if (f == NULL) return -1;
   
@@ -358,6 +309,52 @@ system_read(int fd, void *buffer, unsigned size) {
   return total;
 }
 
+static long
+system_write (int fd, const void *buf, unsigned size) {
+  if (size == 0) return 0;
+  if (buf == NULL) system_exit(-1);
+
+  void *kpage = palloc_get_page(0);
+  if (!kpage) return -1;
+
+  long total = 0;
+
+  if (fd == 1) {              // STDOUT
+    while ((unsigned)total < size) {
+      size_t chunk = size - (unsigned)total;
+      if (chunk > PGSIZE) chunk = PGSIZE;
+
+      copy_in(kpage, (const uint8_t *)buf + total, chunk);
+      putbuf((const char *)kpage, chunk);
+
+      total += (long)chunk;
+    }
+    palloc_free_page(kpage);
+    return total;
+  }
+
+  if (fd == 0) { palloc_free_page(kpage); return -1; }
+
+  struct file *f = fd_get(fd);
+  if (!f) { palloc_free_page(kpage); return -1; }
+
+  lock_acquire(&filesys_lock);
+  while ((unsigned)total < size) {
+    size_t chunk = size - (unsigned)total;
+    if (chunk > PGSIZE) chunk = PGSIZE;
+
+    copy_in(kpage, (const uint8_t *)buf + total, chunk);
+    off_t n = file_write(f, kpage, chunk);
+    if (n <= 0) break;
+    total += (long)n;
+    if ((size_t)n < chunk) break;
+  }
+  lock_release(&filesys_lock);
+  palloc_free_page(kpage);
+  return total;
+}
+
+
 static void
 system_seek(int fd, unsigned position) {
   if (fd == 1 || fd == 0) return;
@@ -471,6 +468,7 @@ static bool fd_ensure_table(void) {
 
   t->fd_table = newtab;
   t->fd_cap   = PGSIZE / (int)sizeof(t->fd_table[0]);
+  t->fd_table_from_palloc = true;
   return true;
 }
 

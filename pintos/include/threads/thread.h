@@ -136,8 +136,9 @@ struct thread {
   /* 시스템 콜 */
   struct lock filesys_lock;
 
-  struct file **fd_table;   // 파일 포인터 배열
-  int fd_cap;               // 한계
+  struct file **fd_table;    // 파일 포인터 배열
+  int fd_cap;                // 한계
+  bool fd_table_from_palloc; // exec 누수 관리용
 
   struct file *exec_file;   // exec 파일 관리용
   
