@@ -14,9 +14,28 @@
 #include "userprog/gdt.h"
 #include "userprog/process.h"
 
-
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
+
+void validate_ptr(const void *uaddr);
+void validate_str(const char *str);
+void validate_buffer_size(void *buffer, unsigned size);
+struct file *fd_to_file(int fd);
+
+void sys_exit(int status);
+int sys_fork(const char *thread_name, struct intr_frame *f);
+int sys_exec(const char *cmd_line);
+int sys_wait(int pid);
+
+bool sys_create(const char *file, unsigned initial_size);
+bool sys_remove(const char *file);
+int sys_open(const char *file);
+int sys_filesize(int fd);
+int sys_read(int fd, void *buffer, unsigned size);
+int sys_write(int fd, const void *buffer, unsigned size);
+void sys_seek(int fd, unsigned position);
+unsigned sys_tell(int fd);
+void sys_close(int fd);
 
 /* System call.
  *
@@ -37,25 +56,6 @@ void syscall_handler(struct intr_frame *);
 #define ARG_4(f_) ((f_)->R.r10)
 #define ARG_5(f_) ((f_)->R.r8)
 #define ARG_6(f_) ((f_)->R.r9)
-
-void validate_ptr(const void *uaddr);
-void validate_str(const char *str);
-void validate_buffer_size(void *buffer, unsigned size);
-struct file *fd_to_file(int fd);
-void sys_exit(int status);
-
-int sys_fork(const char *thread_name, struct intr_frame *f);
-int sys_exec(const char *cmd_line);
-int sys_wait(int pid);
-bool sys_create(const char *file, unsigned initial_size);
-bool sys_remove(const char *file);
-int sys_open(const char *file);
-int sys_filesize(int fd);
-int sys_read(int fd, void *buffer, unsigned size);
-int sys_write(int fd, const void *buffer, unsigned size);
-void sys_seek(int fd, unsigned position);
-unsigned sys_tell(int fd);
-void sys_close(int fd);
 
 static struct lock filesys_lock;
 
