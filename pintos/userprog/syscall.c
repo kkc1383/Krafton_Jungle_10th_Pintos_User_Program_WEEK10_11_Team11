@@ -9,8 +9,11 @@
 #include "threads/init.h"
 #include "threads/interrupt.h"
 #include "threads/loader.h"
+#include "threads/palloc.h"
 #include "threads/thread.h"
 #include "userprog/gdt.h"
+#include "userprog/process.h"
+
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
@@ -166,7 +169,10 @@ struct file *fd_to_file(int fd) {
 void sys_halt() { power_off(); }
 void sys_exit(int status) {
   struct thread *t = thread_current();
-  t->self_cp->exit_status = status;
+  if (t->self_cp != NULL) {
+    t->self_cp->exit_status = status;
+  }
+
   printf("%s: exit(%d)\n", t->name, status);
   thread_exit();
 }
@@ -176,7 +182,33 @@ int sys_fork(const char *thread_name, struct intr_frame *f) {
   validate_str(thread_name);
   return process_fork(thread_name, f);
 }
-int sys_exec(const char *cmd_line) {}
+int sys_exec(const char *cmd_line) {
+  validate_str(cmd_line);
+  char *kern_cmd_line = malloc(strlen(cmd_line) + 1);
+  memcpy(kern_cmd_line, cmd_line, strlen(cmd_line) + 1);
+
+  int len = strlen(kern_cmd_line) + 1;
+  struct passing_arguments *pargs = palloc_get_page(0);
+  pargs->cp = palloc_get_page(0);
+  pargs->full_args = palloc_get_page(0);
+  pargs->file_name = palloc_get_page(0);
+
+  memcpy(pargs->full_args, kern_cmd_line, len);
+  memcpy(pargs->file_name, kern_cmd_line, len);
+  char *space = strchr(pargs->file_name, ' ');
+  if (space) {
+    *space = '\0';
+  }
+  // exec() 호출자는 항상 자식프로세스
+  pargs->cp = thread_current()->self_cp;
+
+  int res = process_exec(pargs);
+  if (res < 0) {
+    free(kern_cmd_line);
+    sys_exit(res);
+  }
+  NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
+}
 int sys_wait(int pid) { return process_wait(pid); }
 
 /* 파일IO 시스템콜 */

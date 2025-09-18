@@ -21,5 +21,6 @@ int process_exec (void *f_name);
 int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
+struct child_process *find_child_process(struct thread *parent, tid_t tid);
 
 #endif /* userprog/process.h */

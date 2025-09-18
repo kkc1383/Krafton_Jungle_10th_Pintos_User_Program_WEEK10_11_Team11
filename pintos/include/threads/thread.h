@@ -120,6 +120,9 @@ struct thread {
   struct file *fd_table[PD_MAX];
   int next_fd;  
 
+  /* 실행중인 ELF파일 */
+  struct file *running_file;
+
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
@@ -139,7 +142,9 @@ struct thread {
 struct child_process {
   tid_t tid;
   int exit_status;
-  struct semaphore wait_sema;
+  int load_success;
+  struct semaphore wait_sema; /* 부모가 자식의 종료 동기화 */
+  struct semaphore load_sema; /* exec 동기화 */
   struct list_elem elem;
 };
 
