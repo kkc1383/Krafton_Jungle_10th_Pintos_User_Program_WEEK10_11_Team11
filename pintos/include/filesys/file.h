@@ -19,7 +19,6 @@ struct file_info {
   struct list dup_list;              /* dup 된 fd들의 list */
   int dup_count;      /* list_sie(dup_list) fork 하면서 차감하면서 마지막 dup 판단 */
   bool is_duplicated; /* 첫 복제임을 알기 위해서 */
-  int stdtype;        /* 0: 표준 입력, 1: 표준 출력, 2: 일반 파일 */
 };
 struct dup_elem {
   int fd;
@@ -48,5 +47,5 @@ void file_seek(struct file *, off_t);
 off_t file_tell(struct file *);
 off_t file_length(struct file *);
 
-struct file_info *init_std(int stdtype);
+struct file_info *init_std(void);
 #endif /* filesys/file.h */

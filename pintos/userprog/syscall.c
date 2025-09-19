@@ -34,6 +34,8 @@ static int system_write(int fd, const void *buffer, unsigned size);
 static void system_seek(int fd, unsigned position);
 static unsigned system_tell(int fd);
 static void system_close(int fd);
+static int system_dup2(int oldfd, int newfd);
+
 static void validate_user_string(const char *str);
 static int allocate_fd(void);
 static int expend_fd_table(struct thread *curr, size_t size);
@@ -110,6 +112,9 @@ void syscall_handler(struct intr_frame *f UNUSED) {
       break;
     case SYS_CLOSE:
       system_close(f->R.rdi);
+      break;
+    case SYS_DUP2:
+      f->R.rax = system_dup2(f->R.rdi, f->R.rsi);
       break;
     default:
       printf("unknown! %d\n", f->R.rax);
@@ -219,7 +224,9 @@ static int system_filesize(int fd) {
   int file_size;
   struct thread *curr = thread_current();
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
-  if (!curr->fd_table[fd]) return -1;
+  if (!curr->fd_table[fd] || curr->fd_table[fd] == get_std_in() ||
+      curr->fd_table[fd] == get_std_out())
+    return -1;
   lock_acquire(&filesys_lock);
   file_size = file_length(curr->fd_table[fd]->file);
   lock_release(&filesys_lock);
@@ -230,6 +237,8 @@ static int system_read(int fd, void *buffer, unsigned size) {
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int read_bytes;
   validate_user_string(buffer);
+  if (curr->fd_table[fd] == get_std_out())  // 표준 입력일 경우 리턴
+    return -1;
   if (curr->fd_table[fd] == get_std_in()) {  //표준 입력일 경우
     read_bytes = input_getc();
   } else {
@@ -246,6 +255,8 @@ static int system_write(int fd, const void *buffer, unsigned size) {
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int write_bytes;
   validate_user_string(buffer);  // buffer가 커널 영역이거나 NULL일경우 시스템 종료
+  if (curr->fd_table[fd] == get_std_in())  // 표준 입력일 경우 리턴
+    return -1;
   if (curr->fd_table[fd] == get_std_out()) {  // 표준 출력일 경우
     putbuf(buffer, size);
     return size;
@@ -264,7 +275,9 @@ static int system_write(int fd, const void *buffer, unsigned size) {
 static void system_seek(int fd, unsigned position) {
   struct thread *curr = thread_current();
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
-  if (!curr->fd_table[fd]) return -1;
+  if (!curr->fd_table[fd] || curr->fd_table[fd] == get_std_in() ||
+      curr->fd_table[fd] == get_std_out())
+    return -1;
   lock_acquire(&filesys_lock);
   file_seek(curr->fd_table[fd]->file, (off_t)position);
   lock_release(&filesys_lock);
@@ -273,7 +286,9 @@ static unsigned system_tell(int fd) {
   struct thread *curr = thread_current();
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   unsigned tell_bytes;
-  if (!curr->fd_table[fd]) return -1;
+  if (!curr->fd_table[fd] || curr->fd_table[fd] == get_std_in() ||
+      curr->fd_table[fd] == get_std_out())
+    return -1;
   lock_acquire(&filesys_lock);
   tell_bytes = file_tell(curr->fd_table[fd]->file);
   lock_release(&filesys_lock);
@@ -291,11 +306,12 @@ static void system_close(int fd) {
            e != list_end(&curr->fd_table[fd]->dup_list); e = list_next(e)) {
         struct dup_elem *dup = list_entry(e, struct dup_elem, elem);
         if (dup->fd == fd) {
-          list_remove(dup);
+          list_remove(&dup->elem);
+          free(dup);
           break;
         }
       }
-      // dup_count는 안건드림, 그건 fork 용임.
+      curr->fd_table[fd]->dup_count--;  // dup_count 바꾸기
     } else {
       lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
       file_close(curr->fd_table[fd]->file);  // file 닫아주기
@@ -305,6 +321,40 @@ static void system_close(int fd) {
     }
   }
   curr->fd_table[fd] = NULL;  // fd_table에서 빼주기
+}
+static int system_dup2(int oldfd, int newfd) {
+  struct thread *curr = thread_current();
+  // oldfd가 유효한 파일 디스크립터가 아니라면 -1 반환 후 종료
+  if (oldfd < 0 || curr->fd_table[oldfd] == NULL || newfd < 0) return -1;
+  // oldfd와 newfd가 같으면 그냥 newfd 반환 후 종료
+  if (oldfd == newfd) return newfd;
+
+  // newfd가 열려있는 fd라면 fd닫기
+  if (curr->fd_table[newfd] != NULL && newfd <= curr->fd_max) {
+    system_close(newfd);  // 표준 입출력도 ok
+  }
+
+  /* 본격적인 dup2 동작 */
+
+  // newfd가 현재 fd_table에 없는 숫자일 경우 확장
+  if (newfd >= curr->fd_size) {
+    if (expend_fd_table(curr, newfd - curr->fd_size + 1) < 0) return -1;
+  }
+  // 표준 입출력일 경우
+  if (curr->fd_table[oldfd] == get_std_in() || curr->fd_table[oldfd] == get_std_out()) {
+    curr->fd_table[newfd] = curr->fd_table[oldfd];
+  } else {  //일반 파일일 경우
+    struct file_info *dup_file_info = curr->fd_table[oldfd];
+    curr->fd_table[newfd] = dup_file_info;
+    dup_file_info->dup_count++;
+    /* dup_list에 추가 */
+    struct dup_elem *new_dup_elem = (struct dup_elem *)malloc(sizeof(struct dup_elem));
+    if (!new_dup_elem) return -1;
+    new_dup_elem->fd = newfd;
+    list_push_back(&dup_file_info->dup_list, &new_dup_elem->elem);
+  }
+  if (newfd > curr->fd_max) curr->fd_max = newfd;
+  return newfd;
 }
 
 static void validate_user_string(const char *str) {
@@ -325,3 +375,27 @@ static int expend_fd_table(struct thread *curr, size_t size) {  //넣고싶은 �
 }
 static struct list *list_return(struct list *t) { return t; }
 static struct file *file_return(struct file *f) { return f; }
+
+void exit_close(int fd) {
+  struct thread *curr = thread_current();
+  if (!list_empty(&curr->fd_table[fd]->dup_list)) {  // dup2 관계일경우에
+    // dup_list에서 제거
+    for (struct list_elem *e = list_begin(&curr->fd_table[fd]->dup_list);
+         e != list_end(&curr->fd_table[fd]->dup_list); e = list_next(e)) {
+      struct dup_elem *dup = list_entry(e, struct dup_elem, elem);
+      if (dup->fd == fd) {
+        list_remove(&dup->elem);
+        free(dup);
+        break;
+      }
+    }
+    curr->fd_table[fd]->dup_count--;  // dup_count 바꾸기
+  } else {
+    lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
+    file_close(curr->fd_table[fd]->file);  // file 닫아주기
+    lock_release(&filesys_lock);
+
+    free(curr->fd_table[fd]);  // file_info 메모리할당 해제
+  }
+  curr->fd_table[fd] = NULL;  // fd_table에서 빼주기
+}

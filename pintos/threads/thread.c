@@ -158,8 +158,8 @@ void thread_init(void) {
    Also creates the idle thread. */
 void thread_start(void) {
   /* 표준 입출력 전용 메모리 할당 */
-  std_in = init_std(0);
-  std_out = init_std(1);
+  std_in = init_std();
+  std_out = init_std();
   /* initial_thread fd_table 초기화 */
   struct file_info **new_fd_table =
       (struct file_info **)calloc(MAX_FILES, (sizeof(struct file_info *)));
@@ -280,7 +280,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   t->fd_table[0] = std_in;
   t->fd_table[1] = std_out;
   t->fd_size = parent->fd_size;
-  t->fd_max = parent->fd_max;
+  t->fd_max = 1;
   // fd 복제는 file_duplicate에서 진행
 
   /* Call the kernel_thread if it scheduled.
