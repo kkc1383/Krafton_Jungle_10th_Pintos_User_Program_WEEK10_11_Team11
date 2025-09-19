@@ -85,34 +85,40 @@ static void initd(void *f_name) {
 tid_t process_fork(const char *name, struct intr_frame *if_) {
   /* Clone current thread to new thread.*/
   // if_ 전달 위해 구조체 생성
-  struct fork_aux aux;
-  aux.parent_if = if_;
-  aux.parent = thread_current();
-  sema_init(&aux.fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
-  tid_t tid;
-  tid = thread_create(name, PRI_DEFAULT, __do_fork, &aux);
-  // thread_create 가 실패했을 경우
-  if (tid == TID_ERROR) {
-    free(&aux);
+  struct fork_aux *aux = (struct fork_aux *)malloc(sizeof(struct fork_aux));
+  if (!aux) {
     return TID_ERROR;
   }
-  sema_down(&aux.fork_sema);  // fork가 실패했을 경우 얘를 탈출할수 있게 해야함.
+  aux->parent_if = if_;
+  aux->parent = thread_current();
+  sema_init(&aux->fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
+  tid_t tid;
+  tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
+  // thread_create 가 실패했을 경우
+  if (tid == TID_ERROR) {
+    free(aux);
+    return TID_ERROR;
+  }
+  sema_down(&aux->fork_sema);  // fork가 실패했을 경우 얘를 탈출할수 있게 해야함.
   // tid 검사 (fork 루틴 중 실패했을 경우)
-  lock_acquire(&aux.parent->children_lock);
+  lock_acquire(&aux->parent->children_lock);
   // child_list 순회
   struct list_elem *e;
-  for (e = list_begin(&aux.parent->child_list); e != list_end(&aux.parent->child_list);
+  for (e = list_begin(&aux->parent->child_list); e != list_end(&aux->parent->child_list);
        e = list_next(e)) {
     struct child_info *child = list_entry(e, struct child_info, child_elem);
     if (child->child_tid == tid) {
-      if (child->has_exited) {  // 자식이 종료되었다면
-        tid = TID_ERROR;
-        break;
+      if (child->has_exited && !child->fork_success) {  // 자식이 종료되었다면
+        lock_release(&aux->parent->children_lock);
+        free(aux);
+        return TID_ERROR;
       }
+      break;
     }
   }
-  lock_release(&aux.parent->children_lock);
+  lock_release(&aux->parent->children_lock);
 
+  free(aux);
   return tid;
 }
 
@@ -185,11 +191,20 @@ static void __do_fork(struct fork_aux *aux) {
    * TODO:       from the fork() until this function successfully duplicates
    * TODO:       the resources of parent.*/
 
-  for (int i = 2; i < parent->fd_max; i++) {
-    if (parent->fd_table[i]) {
-      struct file *dup_file = file_duplicate(parent->fd_table[i]);
+  for (int i = 2; i <= parent->fd_max; i++) {
+    if (parent->fd_table[i]) {  // parent->fd_table[i]->file 이 NULL 일수도?
+      struct file *dup_file = file_duplicate(parent->fd_table[i]->file);
       if (dup_file) {
-        current->fd_table[i] = dup_file;
+        // dup2 이후로는 그냥 이어받아야함
+        struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
+        if (!new_file_info) goto error;  // 메모리 할당 실패시 error
+        new_file_info->dup_count = 1;
+        list_init(&new_file_info->dup_list);
+        new_file_info->duplicated_file = NULL;
+        new_file_info->file = dup_file;
+        new_file_info->is_duplicated = false;
+
+        current->fd_table[i] = new_file_info;
         current->fd_max = i;
       } else
         goto error;
@@ -197,6 +212,20 @@ static void __do_fork(struct fork_aux *aux) {
   }
   // process_init();
   sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
+
+  /* 정상적으로 fork 되었음을 알림 */
+  lock_acquire(&parent->children_lock);
+  // child_list 순회
+  struct list_elem *e;
+  for (e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(e)) {
+    struct child_info *child = list_entry(e, struct child_info, child_elem);
+    if (child->child_tid == current->tid) {
+      child->fork_success = true;
+      break;
+    }
+  }
+  lock_release(&parent->children_lock);
+
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
@@ -298,7 +327,10 @@ void process_exit(void) {
   process_cleanup();
   struct thread *curr = thread_current();
   for (int i = 0; i <= curr->fd_max; i++) {
-    file_close(curr->fd_table[i]);
+    if (curr->fd_table[i]) {
+      file_close(curr->fd_table[i]->file);
+      free(curr->fd_table[i]);
+    }
   }
   free(curr->fd_table);  // fd table 반환
 }

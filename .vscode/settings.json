@@ -38,6 +38,8 @@
         "mmu.h": "c",
         "malloc.h": "c",
         "file.h": "c",
-        "atomic": "c"
+        "atomic": "c",
+        "debug.h": "c",
+        "string.h": "c"
     }
 }

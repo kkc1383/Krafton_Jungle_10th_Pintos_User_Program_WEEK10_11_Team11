@@ -90,7 +90,6 @@ static void kill(struct intr_frame *f) {
          here.)  Panic the kernel to make the point.  */
       intr_dump_frame(f);
       PANIC("Kernel bug - unexpected interrupt in kernel");
-      system_exit(-1);
 
     default:
       /* Some other code segment?  Shouldn't happen.  Panic the

@@ -47,6 +47,7 @@ static struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
+static struct lock all_list_lock;
 
 /* Thread destruction requests */
 static struct list destruction_req;
@@ -117,6 +118,7 @@ void thread_init(void) {
 
   /* Init the global thread context */
   lock_init(&tid_lock);
+  lock_init(&all_list_lock);
   list_init(&ready_list);
   list_init(&sleep_list);
   list_init(&all_list);
@@ -136,8 +138,6 @@ void thread_init(void) {
   list_init(&initial_thread->child_list);
   lock_init(&initial_thread->children_lock);
 
-  // memset(initial_thread->fd_table, 0, sizeof(MAX_FILES * sizeof(struct file *)));
-
   if (thread_mlfqs) {
     mlfqs_update_priority(initial_thread);  // 첫 main쓰레드 priority 설정(PRI_MAX)
 
@@ -155,7 +155,10 @@ void thread_init(void) {
    Also creates the idle thread. */
 void thread_start(void) {
   /* initial_thread fd_table 초기화 */
-  initial_thread->fd_table = (struct file **)malloc(MAX_FILES * (sizeof(struct file *)));
+  struct file_info **new_fd_table =
+      (struct file_info **)calloc(MAX_FILES, (sizeof(struct file_info *)));
+  if (!new_fd_table) thread_exit();
+  initial_thread->fd_table = new_fd_table;
   initial_thread->fd_size = MAX_FILES;
   initial_thread->fd_max = 1;
 
@@ -218,7 +221,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   /* Allocate thread. */
   t = palloc_get_page(PAL_ZERO);
-  if (t == NULL) return TID_ERROR;
+  if (t == NULL) return TID_ERROR;  //메모리 할당 실패 시
 
   /* Initialize thread. */
   init_thread(t, name, priority);
@@ -228,16 +231,20 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* userprog 추가 child_info 초기화 */
   struct thread *parent = thread_current();
   struct child_info *child = malloc(sizeof(struct child_info));
-  if (child != NULL) {
-    child->child_tid = tid;
-    child->exit_status = -1;
-    child->has_exited = false;
-    sema_init(&child->wait_sema, 0);
-
-    lock_acquire(&parent->children_lock);
-    list_push_back(&parent->child_list, &child->child_elem);
-    lock_release(&parent->children_lock);
+  if (child == NULL) {  //메모리 할당 실패 시
+    palloc_free_page(t);
+    return TID_ERROR;
   }
+  child->child_tid = tid;
+  child->exit_status = -1;
+  child->has_exited = false;
+  child->fork_success = false;
+  sema_init(&child->wait_sema, 0);
+
+  lock_acquire(&parent->children_lock);
+  list_push_back(&parent->child_list, &child->child_elem);
+  lock_release(&parent->children_lock);
+
   /* userprog 추가 초기화 함수들 */
   list_init(&t->child_list);
   lock_init(&t->children_lock);
@@ -255,7 +262,13 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   }
 
   /* fd table 초기화 */
-  t->fd_table = (struct file **)calloc(parent->fd_size, (sizeof(struct file *)));
+  struct file_info **new_fd_table =
+      (struct file_info **)calloc(parent->fd_size, (sizeof(struct file_info *)));
+  if (!new_fd_table) {  // 메모리 할당 실패 시
+    palloc_free_page(t);
+    return TID_ERROR;
+  }
+  t->fd_table = new_fd_table;
   t->fd_size = parent->fd_size;
   t->fd_max = 1;
   // fd 복제는 file_duplicate에서 진행
@@ -367,7 +380,9 @@ void thread_exit(void) {
   /* Just set our status to dying and schedule another process.
      We will be destroyed during the call to schedule_tail(). */
   intr_disable();
+  lock_acquire(&all_list_lock);
   list_remove(&thread_current()->all_elem);  // all_list에서 제거
+  lock_release(&all_list_lock);
   do_schedule(THREAD_DYING);
   NOT_REACHED();
 }
@@ -852,10 +867,16 @@ bool is_not_idle(struct thread *t) { return t != idle_thread; }
 
 struct thread *thread_get_by_tid(tid_t tid) {
   struct list_elem *e;
+
+  lock_acquire(&all_list_lock);
   for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
     struct thread *t = list_entry(e, struct thread, all_elem);
-    if (t->tid == tid) return t;
+    if (t->tid == tid) {
+      lock_release(&all_list_lock);
+      return t;
+    }
   }
+  lock_release(&all_list_lock);
   return NULL;
 }
 
