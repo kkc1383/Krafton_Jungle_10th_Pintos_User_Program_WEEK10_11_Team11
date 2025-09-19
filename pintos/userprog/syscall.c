@@ -230,7 +230,7 @@ static int system_read(int fd, void *buffer, unsigned size) {
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int read_bytes;
   validate_user_string(buffer);
-  if (fd == 0) {  //표준 입력일 경우
+  if (curr->fd_table[fd] == get_std_in()) {  //표준 입력일 경우
     read_bytes = input_getc();
   } else {
     struct file_info *read_file_info = curr->fd_table[fd];
@@ -246,7 +246,7 @@ static int system_write(int fd, const void *buffer, unsigned size) {
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
   int write_bytes;
   validate_user_string(buffer);  // buffer가 커널 영역이거나 NULL일경우 시스템 종료
-  if (fd == 1) {                 // 표준 출력일 경우
+  if (curr->fd_table[fd] == get_std_out()) {  // 표준 출력일 경우
     putbuf(buffer, size);
     return size;
   } else {
@@ -282,13 +282,28 @@ static unsigned system_tell(int fd) {
 static void system_close(int fd) {
   struct thread *curr = thread_current();
   if (fd < 0 || fd > curr->fd_max) system_exit(-1);  // fd 범위를 벗어난경우 return
-  if (!curr->fd_table[fd]) return;
+  if (!curr->fd_table[fd]) return;                   // NULL 일 경우 리턴
+  if (curr->fd_table[fd] != get_std_in() &&
+      curr->fd_table[fd] != get_std_out()) {  //표준 입출력일 경우 그냥 NULL로만 바꿔줌
+    if (curr->fd_table[fd]->dup_count >= 2) {  // dup2 관계일경우에
+      // dup_list에서 제거
+      for (struct list_elem *e = list_begin(&curr->fd_table[fd]->dup_list);
+           e != list_end(&curr->fd_table[fd]->dup_list); e = list_next(e)) {
+        struct dup_elem *dup = list_entry(e, struct dup_elem, elem);
+        if (dup->fd == fd) {
+          list_remove(dup);
+          break;
+        }
+      }
+      // dup_count는 안건드림, 그건 fork 용임.
+    } else {
+      lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
+      file_close(curr->fd_table[fd]->file);  // file 닫아주기
+      lock_release(&filesys_lock);
 
-  lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
-  file_close(curr->fd_table[fd]->file);  // file 닫아주기
-  lock_release(&filesys_lock);
-
-  free(curr->fd_table[fd]);   // file_info 메모리할당 해제
+      free(curr->fd_table[fd]);  // file_info 메모리할당 해제
+    }
+  }
   curr->fd_table[fd] = NULL;  // fd_table에서 빼주기
 }
 

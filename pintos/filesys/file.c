@@ -138,3 +138,13 @@ off_t file_tell(struct file *file) {
   ASSERT(file != NULL);
   return file->pos;
 }
+
+struct file_info *init_std(int stdtype) {
+  /* 리턴할 file_info 만들기*/
+  struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
+  if (!new_file_info) return NULL;
+  /* file_info 필드 채우기 */
+  new_file_info->stdtype = stdtype;
+
+  return new_file_info;
+}

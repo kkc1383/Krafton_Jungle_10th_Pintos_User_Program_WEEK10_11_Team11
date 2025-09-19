@@ -108,7 +108,7 @@ tid_t process_fork(const char *name, struct intr_frame *if_) {
        e = list_next(e)) {
     struct child_info *child = list_entry(e, struct child_info, child_elem);
     if (child->child_tid == tid) {
-      if (child->has_exited && !child->fork_success) {  // 자식이 종료되었다면
+      if (child->has_exited && !child->fork_success) {  // do fork 중에 자식이 종료되었다면
         lock_release(&aux->parent->children_lock);
         free(aux);
         return TID_ERROR;
@@ -191,25 +191,54 @@ static void __do_fork(struct fork_aux *aux) {
    * TODO:       from the fork() until this function successfully duplicates
    * TODO:       the resources of parent.*/
 
-  for (int i = 2; i <= parent->fd_max; i++) {
-    if (parent->fd_table[i]) {  // parent->fd_table[i]->file 이 NULL 일수도?
+  for (int i = 0; i <= parent->fd_max; i++) {
+    if (!parent->fd_table[i]) continue;
+    if (parent->fd_table[i] == get_std_in() ||
+        parent->fd_table[i] == get_std_out()) {  // 표준 입출력일 경우
+      current->fd_table[i] = parent->fd_table[i];
+      continue;
+    }
+    if (!parent->fd_table[i]->is_duplicated) {
       struct file *dup_file = file_duplicate(parent->fd_table[i]->file);
-      if (dup_file) {
-        // dup2 이후로는 그냥 이어받아야함
-        struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
-        if (!new_file_info) goto error;  // 메모리 할당 실패시 error
-        new_file_info->dup_count = 1;
-        list_init(&new_file_info->dup_list);
-        new_file_info->duplicated_file = NULL;
-        new_file_info->file = dup_file;
-        new_file_info->is_duplicated = false;
+      if (!dup_file) goto error;
 
-        current->fd_table[i] = new_file_info;
-        current->fd_max = i;
-      } else
+      // 복제할 file info 만들기
+      struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
+      if (!new_file_info) {  // 메모리 할당 실패시 error
+        file_close(dup_file);
         goto error;
+      }
+
+      new_file_info->dup_count = 1;
+      list_init(&new_file_info->dup_list);
+      new_file_info->duplicated_file = NULL;
+      new_file_info->file = dup_file;
+      new_file_info->is_duplicated = false;
+
+      current->fd_table[i] = new_file_info;
+      /* 달아 놓기*/
+      parent->fd_table[i]->duplicated_file = new_file_info;
+      parent->fd_table[i]->is_duplicated = true;
+      parent->fd_table[i]->dup_count--;
+    } else {
+      current->fd_table[i] = parent->fd_table[i]->duplicated_file;  //달아 놓은거 이어 받기
+      current->fd_table[i]->dup_count++;
+      /* dup_list에 추가 */
+      struct dup_elem *new_dup_elem = (struct dup_elem *)malloc(sizeof(struct dup_elem));
+      if (!new_dup_elem) goto error;
+      new_dup_elem->fd = i;
+      list_push_back(&current->fd_table[i]->dup_list, &new_dup_elem->elem);
+
+      parent->fd_table[i]->dup_count--;
+    }
+    // 마지막 주자가 정리하고 나가기
+    if (parent->fd_table[i]->dup_count == 0) {
+      parent->fd_table[i]->dup_count = list_size(&parent->fd_table[i]->dup_list) + 1;
+      parent->fd_table[i]->duplicated_file = NULL;
+      parent->fd_table[i]->is_duplicated = false;
     }
   }
+  current->fd_max = parent->fd_max;
   // process_init();
   sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
 
@@ -327,12 +356,18 @@ void process_exit(void) {
   process_cleanup();
   struct thread *curr = thread_current();
   for (int i = 0; i <= curr->fd_max; i++) {
+    if (curr->fd_table[i] == get_std_in() || curr->fd_table[i] == get_std_out()) continue;
     if (curr->fd_table[i]) {
       file_close(curr->fd_table[i]->file);
       free(curr->fd_table[i]);
     }
   }
   free(curr->fd_table);  // fd table 반환
+
+  if (!strcmp(curr->name, "main")) {  // main이 꺼질경우 std_in, std_out으로 받았던 메모리 반환
+    free(get_std_in());
+    free(get_std_out());
+  }
 }
 
 /* Free the current process's resources. */

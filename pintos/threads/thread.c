@@ -69,6 +69,9 @@ static unsigned thread_ticks; /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
+struct file_info *std_in;
+struct file_info *std_out;
+
 static void kernel_thread(thread_func *, void *aux);
 
 static void idle(void *aux UNUSED);
@@ -154,11 +157,16 @@ void thread_init(void) {
 /* Starts preemptive thread scheduling by enabling interrupts.
    Also creates the idle thread. */
 void thread_start(void) {
+  /* 표준 입출력 전용 메모리 할당 */
+  std_in = init_std(0);
+  std_out = init_std(1);
   /* initial_thread fd_table 초기화 */
   struct file_info **new_fd_table =
       (struct file_info **)calloc(MAX_FILES, (sizeof(struct file_info *)));
   if (!new_fd_table) thread_exit();
   initial_thread->fd_table = new_fd_table;
+  initial_thread->fd_table[0] = std_in;
+  initial_thread->fd_table[1] = std_out;
   initial_thread->fd_size = MAX_FILES;
   initial_thread->fd_max = 1;
 
@@ -269,8 +277,10 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     return TID_ERROR;
   }
   t->fd_table = new_fd_table;
+  t->fd_table[0] = std_in;
+  t->fd_table[1] = std_out;
   t->fd_size = parent->fd_size;
-  t->fd_max = 1;
+  t->fd_max = parent->fd_max;
   // fd 복제는 file_duplicate에서 진행
 
   /* Call the kernel_thread if it scheduled.
@@ -888,4 +898,11 @@ struct child_info *child_return(struct list_elem *e) {
 }
 struct thread *all_thread_return(struct list_elem *t) {
   return list_entry(t, struct thread, all_elem);
+}
+
+struct file_info *get_std_in() {
+  return std_in;
+}
+struct file_info *get_std_out() {
+  return std_out;
 }

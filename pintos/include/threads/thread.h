@@ -192,4 +192,6 @@ bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
 
 struct thread *thread_get_by_tid(tid_t tid);
+struct file_info *get_std_in();
+struct file_info *get_std_out();
 #endif /* threads/thread.h */
