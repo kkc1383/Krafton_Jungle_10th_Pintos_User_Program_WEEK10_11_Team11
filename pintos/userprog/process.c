@@ -347,14 +347,14 @@ __do_fork (void *aux) {
 	 * TODO:       이 함수가 부모의 자원을 성공적으로 복제하기 전까지
 	 * TODO:       부모는 fork()에서 반환되어서는 안 된다. */
 	struct hash dupmap;
- 	hash_init(&dupmap, dupmap_hash, dupmap_less, NULL);	
-
 	if (parent->fd_table && parent->fd_cap > 0) {
 		current->fd_cap = parent->fd_cap;
 
 		current->fd_table = palloc_get_page(PAL_ZERO);
 		if (!current->fd_table) goto error;
 		current->fd_table_from_palloc = true;
+	
+		hash_init(&dupmap, dupmap_hash, dupmap_less, NULL);	
 
 		for (int i = 0; i < parent->fd_cap; i++) {
 			struct file *p = parent->fd_table[i];
@@ -367,15 +367,17 @@ __do_fork (void *aux) {
 
 			struct dupmap_ent *ent = dupmap_find(&dupmap, p);
 			struct file *nf;
+			/* 기존 존재 유무 */
 			if (ent) {
-				nf = ent->child_fp;                 // 같은 child_fp 재사용 (오프셋 공유)
+				nf = ent->child_fp;   // 같은 child_fp 재사용 (오프셋 공유)
 				if (!fdref_inc(nf)) goto fork_rollback;
 				current->fd_table[i] = nf;
+
+			/* 없으면 새로 만든다 */
 			} else {
-				// 새로 깊은 복사: 부모와 오프셋 분리
 				nf = file_duplicate(p);
 				if (!nf) goto fork_rollback;
-				if (!fdref_inc(nf)) {               // 자식 내 참조 1 등록
+				if (!fdref_inc(nf)) {  // 자식 내 참조 1 등록
 					lock_acquire(&filesys_lock);
 					file_close(nf);
 					lock_release(&filesys_lock);
