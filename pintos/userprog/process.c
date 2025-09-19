@@ -22,6 +22,7 @@
 #include "intrinsic.h"
 #include "threads/palloc.h"  // palloc_get_page/free
 #include "threads/vaddr.h"   // PGSIZE
+#include "lib/kernel/hash.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -46,6 +47,13 @@ struct fork_args {
   struct child_status *cs;
 };
 
+/* 제대로된 dup2 */
+struct dupmap_ent {
+  struct file *parent_fp;         // 키
+  struct file *child_fp;          // 값
+  struct hash_elem elem;
+};
+
 
 /* General process initializer for initd and other process. */
 /* initd 및 기타 프로세스를 위한 일반 초기화 함수. */
@@ -56,6 +64,27 @@ process_init (void) {
 		list_init(&current->children);
 		current->proc_inited = true;
 	}
+}
+
+/* 해시 */
+static unsigned dupmap_hash (const struct hash_elem *e, void *aux) {
+  const struct dupmap_ent *x = hash_entry(e, struct dupmap_ent, elem);
+  return hash_bytes(&x->parent_fp, sizeof x->parent_fp);
+}
+static bool dupmap_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+  const struct dupmap_ent *xa = hash_entry(a, struct dupmap_ent, elem);
+  const struct dupmap_ent *xb = hash_entry(b, struct dupmap_ent, elem);
+  return (uintptr_t)xa->parent_fp < (uintptr_t)xb->parent_fp;
+}
+static struct dupmap_ent *dupmap_find (struct hash *m, struct file *parent_fp) {
+  struct dupmap_ent key;
+  key.parent_fp = parent_fp;
+  struct hash_elem *e = hash_find(m, &key.elem);
+  return e ? hash_entry(e, struct dupmap_ent, elem) : NULL;
+}
+static void dupmap_free_action(struct hash_elem *e, void *aux) {
+  struct dupmap_ent *ent = hash_entry(e, struct dupmap_ent, elem);
+  free(ent);
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -317,6 +346,9 @@ __do_fork (void *aux) {
 	 * TODO: 힌트) 파일 객체를 복제하려면 include/filesys/file.h의 `file_duplicate`를 사용하라.
 	 * TODO:       이 함수가 부모의 자원을 성공적으로 복제하기 전까지
 	 * TODO:       부모는 fork()에서 반환되어서는 안 된다. */
+	struct hash dupmap;
+ 	hash_init(&dupmap, dupmap_hash, dupmap_less, NULL);	
+
 	if (parent->fd_table && parent->fd_cap > 0) {
 		current->fd_cap = parent->fd_cap;
 
@@ -333,18 +365,36 @@ __do_fork (void *aux) {
 				continue;
 			}
 
-			/* 일반 파일: 자식이 독립 오프셋을 갖도록 복제 */
-			struct file *nf = file_duplicate(p);
-			if (!nf) goto fork_rollback;
-			if (!fdref_inc(nf)) {
-				lock_acquire(&filesys_lock);
-				file_close(nf);
-				lock_release(&filesys_lock);
-				goto fork_rollback;
+			struct dupmap_ent *ent = dupmap_find(&dupmap, p);
+			struct file *nf;
+			if (ent) {
+				nf = ent->child_fp;                 // 같은 child_fp 재사용 (오프셋 공유)
+				if (!fdref_inc(nf)) goto fork_rollback;
+				current->fd_table[i] = nf;
+			} else {
+				// 새로 깊은 복사: 부모와 오프셋 분리
+				nf = file_duplicate(p);
+				if (!nf) goto fork_rollback;
+				if (!fdref_inc(nf)) {               // 자식 내 참조 1 등록
+					lock_acquire(&filesys_lock);
+					file_close(nf);
+					lock_release(&filesys_lock);
+					goto fork_rollback;
+				}
+				current->fd_table[i] = nf;
+
+				// 매핑 등록
+				ent = malloc(sizeof *ent);
+				if (!ent) goto fork_rollback;
+				ent->parent_fp = p;
+				ent->child_fp  = nf;
+				hash_insert(&dupmap, &ent->elem);
 			}
-			current->fd_table[i] = nf; 
 		}
 	}
+
+	// 성공 경로 — dupmap 엔트리 free
+	hash_destroy(&dupmap, dupmap_free_action);
 
 	cs->load_ok = true;
 	cs->load_done = true;
@@ -368,6 +418,7 @@ fork_rollback:
 	  current->fd_cap = 0;
 	  current->fd_table_from_palloc = false;
 	}
+	hash_destroy(&dupmap, dupmap_free_action);
 	goto error;
 error:
 	cs->load_ok = false;
