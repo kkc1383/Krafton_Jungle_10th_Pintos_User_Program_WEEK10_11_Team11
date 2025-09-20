@@ -347,13 +347,14 @@ static int system_dup2(int oldfd, int newfd) {
     struct file_info *dup_file_info = curr->fd_table[oldfd];
     curr->fd_table[newfd] = dup_file_info;
     dup_file_info->dup_count++;
+
     /* dup_list에 추가 */
     struct dup_elem *new_dup_elem = (struct dup_elem *)malloc(sizeof(struct dup_elem));
     if (!new_dup_elem) return -1;
     new_dup_elem->fd = newfd;
     list_push_back(&dup_file_info->dup_list, &new_dup_elem->elem);
   }
-  if (newfd > curr->fd_max) curr->fd_max = newfd;
+  if (newfd > curr->fd_max) curr->fd_max = newfd;  // fd_max 갱신
   return newfd;
 }
 

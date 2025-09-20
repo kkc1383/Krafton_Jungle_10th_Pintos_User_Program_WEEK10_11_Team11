@@ -377,7 +377,9 @@ void process_exit(void) {
   struct thread *curr = thread_current();
   // printf("fd size : %d, fd_max : %d\n", curr->fd_size, curr->fd_max);
   for (int i = 0; i < curr->fd_size; i++) {
-    if (curr->fd_table[i] == get_std_in() || curr->fd_table[i] == get_std_out()) continue;
+    if (curr->fd_table[i] == get_std_in() || curr->fd_table[i] == get_std_out()) {
+      curr->fd_table[i] = NULL;
+    }
     if (curr->fd_table[i]) {
       exit_close(i);
     }
