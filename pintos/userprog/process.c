@@ -191,62 +191,23 @@ static void __do_fork(struct fork_aux *aux) {
    * TODO:       from the fork() until this function successfully duplicates
    * TODO:       the resources of parent.*/
 
-  for (int i = 0; i <= parent->fd_max; i++) {
+  for (int i = 0; i < parent->fd_size; i++) {
     if (!parent->fd_table[i]) continue;
     if (parent->fd_table[i] == get_std_in() ||
-        parent->fd_table[i] == get_std_out()) {  // 표준 입출력일 경우
+        parent->fd_table[i] == get_std_out()) {  //표준 입출력일경우
       current->fd_table[i] = parent->fd_table[i];
-      continue;
-    }
-    if (!parent->fd_table[i]->is_duplicated) {
-      // 복제할 file info 만들기
-      struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
-      if (!new_file_info) {  // 메모리 할당 실패시 error
-        goto error;
-      }
-
-      struct file *dup_file = file_duplicate(parent->fd_table[i]->file);
-      if (!dup_file) {
-        free(new_file_info);
-        goto error;
-      }
-
-      new_file_info->dup_count = 1;
-      list_init(&new_file_info->dup_list);
-      new_file_info->duplicated_file = NULL;
-      new_file_info->file = dup_file;
-      new_file_info->is_duplicated = false;
-
-      // 혹시 모르니까 초기화 해놓음
-      parent->fd_table[i]->dup_count = list_size(&parent->fd_table[i]->dup_list) + 1;
-
-      current->fd_table[i] = new_file_info;
-      /* 달아 놓기*/
-      parent->fd_table[i]->duplicated_file = new_file_info;
-      parent->fd_table[i]->is_duplicated = true;
-      parent->fd_table[i]->dup_count--;
-
-      current->fd_max = i;
     } else {
-      current->fd_table[i] = parent->fd_table[i]->duplicated_file;  //달아 놓은거 이어 받기
-      current->fd_table[i]->dup_count++;
-      /* dup_list에 추가 */
-      struct dup_elem *new_dup_elem = (struct dup_elem *)malloc(sizeof(struct dup_elem));
-      if (!new_dup_elem) {  //중간에 죽으면 돌려놔야함
-        goto error;
+      if (parent->fd_table[i]->dup_count >= 2) {  // dup2 관계라면
+        current->fd_table[i] = parent->fd_table[i];
+        current->fd_table[i]->dup_count++;
+      } else {  // dup2 관계가 아니라면 그냥 복제
+        struct file *new_file = file_duplicate(parent->fd_table[i]);
+        if (!new_file) goto error;
+        current->fd_table[i] = new_file;
+        current->fd_table[i]->dup_count = 1;
       }
-      new_dup_elem->fd = i;
-      list_push_back(&current->fd_table[i]->dup_list, &new_dup_elem->elem);
-
-      parent->fd_table[i]->dup_count--;
-      current->fd_max = i;
     }
-    // 마지막 주자가 정리하고 나가기
-    if (parent->fd_table[i]->dup_count == 0) {
-      parent->fd_table[i]->dup_count = list_size(&parent->fd_table[i]->dup_list) + 1;
-      parent->fd_table[i]->duplicated_file = NULL;
-      parent->fd_table[i]->is_duplicated = false;
-    }
+    current->fd_max = i;  // fd_max 갱신
   }
   // process_init();
   sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
@@ -267,17 +228,6 @@ static void __do_fork(struct fork_aux *aux) {
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
-  // 중간에 죽었으면 다 되돌려 놓고 죽기
-  for (int i = 0; i <= parent->fd_max; i++) {
-    if (!parent->fd_table[i]) continue;
-    if (parent->fd_table[i] == get_std_in() ||
-        parent->fd_table[i] == get_std_out()) {  // 표준 입출력일 경우
-      continue;
-    }
-    parent->fd_table[i]->is_duplicated = false;
-    parent->fd_table[i]->duplicated_file = NULL;
-    parent->fd_table[i]->dup_count = list_size(&parent->fd_table[i]->dup_list) + 1;
-  }
   sema_up(&aux->fork_sema);
   system_exit(-1);
 }

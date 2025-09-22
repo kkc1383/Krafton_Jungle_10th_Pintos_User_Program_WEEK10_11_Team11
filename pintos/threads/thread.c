@@ -69,8 +69,10 @@ static unsigned thread_ticks; /* # of timer ticks since last yield. */
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
 
-struct file_info *std_in;
-struct file_info *std_out;
+struct file *std_in;
+struct file *std_out;
+// struct file_info *std_in;
+// struct file_info *std_out;
 
 static void kernel_thread(thread_func *, void *aux);
 
@@ -161,8 +163,7 @@ void thread_start(void) {
   std_in = init_std();
   std_out = init_std();
   /* initial_thread fd_table 초기화 */
-  struct file_info **new_fd_table =
-      (struct file_info **)calloc(MAX_FILES, (sizeof(struct file_info *)));
+  struct file **new_fd_table = (struct file **)calloc(MAX_FILES, (sizeof(struct file *)));
   if (!new_fd_table) thread_exit();
   initial_thread->fd_table = new_fd_table;
   initial_thread->fd_table[0] = std_in;
@@ -234,7 +235,9 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* Initialize thread. */
   init_thread(t, name, priority);
   tid = t->tid = allocate_tid();
+  lock_acquire(&all_list_lock);
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
+  lock_release(&all_list_lock);
 
   /* userprog 추가 child_info 초기화 */
   struct thread *parent = thread_current();
@@ -270,8 +273,9 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   }
 
   /* fd table 초기화 */
-  struct file_info **new_fd_table =
-      (struct file_info **)calloc(parent->fd_size, (sizeof(struct file_info *)));
+  struct file **new_fd_table = (struct file **)calloc(parent->fd_size, (sizeof(struct file *)));
+  // struct file_info **new_fd_table =
+  //     (struct file_info **)calloc(parent->fd_size, (sizeof(struct file_info *)));
   if (!new_fd_table) {  // 메모리 할당 실패 시
     palloc_free_page(t);
     return TID_ERROR;
@@ -900,9 +904,9 @@ struct thread *all_thread_return(struct list_elem *t) {
   return list_entry(t, struct thread, all_elem);
 }
 
-struct file_info *get_std_in() {
+struct file *get_std_in() {
   return std_in;
 }
-struct file_info *get_std_out() {
+struct file *get_std_out() {
   return std_out;
 }

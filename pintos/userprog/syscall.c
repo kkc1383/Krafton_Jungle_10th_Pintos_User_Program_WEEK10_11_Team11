@@ -202,19 +202,11 @@ static int system_open(const char *file) {
     }
     new_fd = curr->fd_max + 1;  // 확장했으니 그 다음걸로 fd 설정
   }
-  //공간이 충분하다면
-  // file_info 만들기
-  struct file_info *new_file_info = (struct file_info *)malloc(sizeof(struct file_info));
-  if (!new_file_info) return -1;  // 메모리 할당 실패시 -1리턴
-  new_file_info->dup_count = 1;
-  list_init(&new_file_info->dup_list);
-  new_file_info->duplicated_file = NULL;
-  new_file_info->file = open_file;
-  new_file_info->is_duplicated = false;
 
   if (curr->fd_max < new_fd) curr->fd_max = new_fd;  // fd_max 갱신
 
-  curr->fd_table[new_fd] = new_file_info;  // 해당 쓰레드의 파일 디스크립터 테이블 채우기
+  curr->fd_table[new_fd] = open_file;  // 해당 쓰레드의 파일 디스크립터 테이블 채우기
+  curr->fd_table[new_fd]->dup_count = 1;
   // printf("open file name : %s fd : %d\n", file, curr->fd_max);
   if (!strcmp(curr->name, file))
     file_deny_write(open_file);  // 본인 자신을 열려고 하면 deny_write설정
@@ -228,7 +220,7 @@ static int system_filesize(int fd) {
       curr->fd_table[fd] == get_std_out())
     return -1;
   lock_acquire(&filesys_lock);
-  file_size = file_length(curr->fd_table[fd]->file);
+  file_size = file_length(curr->fd_table[fd]);
   lock_release(&filesys_lock);
   return file_size;
 }
@@ -242,10 +234,10 @@ static int system_read(int fd, void *buffer, unsigned size) {
   if (curr->fd_table[fd] == get_std_in()) {  //표준 입력일 경우
     read_bytes = input_getc();
   } else {
-    struct file_info *read_file_info = curr->fd_table[fd];
+    struct file *read_file_info = curr->fd_table[fd];
     if (!read_file_info) return -1;
     lock_acquire(&filesys_lock);
-    read_bytes = (int)file_read(read_file_info->file, buffer, size);
+    read_bytes = (int)file_read(read_file_info, buffer, size);
     lock_release(&filesys_lock);
   }
   return read_bytes;
@@ -261,13 +253,13 @@ static int system_write(int fd, const void *buffer, unsigned size) {
     putbuf(buffer, size);
     return size;
   } else {
-    struct file_info *write_file_info = curr->fd_table[fd];
+    struct file *write_file_info = curr->fd_table[fd];
     /* Exception Handle */
     if (!write_file_info) return -1;
-    if (write_file_info->file->deny_write) return 0;
+    if (write_file_info->deny_write) return 0;
 
     lock_acquire(&filesys_lock);
-    write_bytes = (int)file_write(write_file_info->file, buffer, size);
+    write_bytes = (int)file_write(write_file_info, buffer, size);
     lock_release(&filesys_lock);
     return write_bytes;
   }
@@ -279,7 +271,7 @@ static void system_seek(int fd, unsigned position) {
       curr->fd_table[fd] == get_std_out())
     return -1;
   lock_acquire(&filesys_lock);
-  file_seek(curr->fd_table[fd]->file, (off_t)position);
+  file_seek(curr->fd_table[fd], (off_t)position);
   lock_release(&filesys_lock);
 }
 static unsigned system_tell(int fd) {
@@ -290,7 +282,7 @@ static unsigned system_tell(int fd) {
       curr->fd_table[fd] == get_std_out())
     return -1;
   lock_acquire(&filesys_lock);
-  tell_bytes = file_tell(curr->fd_table[fd]->file);
+  tell_bytes = file_tell(curr->fd_table[fd]);
   lock_release(&filesys_lock);
   return tell_bytes;
 }
@@ -301,29 +293,18 @@ static void system_close(int fd) {
   if (curr->fd_table[fd] != get_std_in() &&
       curr->fd_table[fd] != get_std_out()) {  //표준 입출력일 경우 그냥 NULL로만 바꿔줌
     if (curr->fd_table[fd]->dup_count >= 2) {  // dup2 관계일경우에
-      // dup_list에서 제거
-      for (struct list_elem *e = list_begin(&curr->fd_table[fd]->dup_list);
-           e != list_end(&curr->fd_table[fd]->dup_list); e = list_next(e)) {
-        struct dup_elem *dup = list_entry(e, struct dup_elem, elem);
-        if (dup->fd == fd) {
-          list_remove(&dup->elem);
-          free(dup);
-          break;
-        }
-      }
-      curr->fd_table[fd]->dup_count--;  // dup_count 바꾸기
+      curr->fd_table[fd]->dup_count--;         // dup_count 바꾸기
     } else {
-      lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
-      file_close(curr->fd_table[fd]->file);  // file 닫아주기
+      lock_acquire(&filesys_lock);     // 동시접근을 막기 위해
+      file_close(curr->fd_table[fd]);  // file 닫아주기
       lock_release(&filesys_lock);
-
-      free(curr->fd_table[fd]);  // file_info 메모리할당 해제
     }
   }
   curr->fd_table[fd] = NULL;  // fd_table에서 빼주기
 }
 static int system_dup2(int oldfd, int newfd) {
   struct thread *curr = thread_current();
+  // printf("dup2 oldfd : %d, newfd: %d\n", oldfd, newfd);
   // oldfd가 유효한 파일 디스크립터가 아니라면 -1 반환 후 종료
   if (oldfd < 0 || curr->fd_table[oldfd] == NULL || newfd < 0) return -1;
   // oldfd와 newfd가 같으면 그냥 newfd 반환 후 종료
@@ -344,15 +325,9 @@ static int system_dup2(int oldfd, int newfd) {
   if (curr->fd_table[oldfd] == get_std_in() || curr->fd_table[oldfd] == get_std_out()) {
     curr->fd_table[newfd] = curr->fd_table[oldfd];
   } else {  //일반 파일일 경우
-    struct file_info *dup_file_info = curr->fd_table[oldfd];
-    curr->fd_table[newfd] = dup_file_info;
-    dup_file_info->dup_count++;
-
-    /* dup_list에 추가 */
-    struct dup_elem *new_dup_elem = (struct dup_elem *)malloc(sizeof(struct dup_elem));
-    if (!new_dup_elem) return -1;
-    new_dup_elem->fd = newfd;
-    list_push_back(&dup_file_info->dup_list, &new_dup_elem->elem);
+    struct file *dup_file = curr->fd_table[oldfd];
+    curr->fd_table[newfd] = dup_file;
+    dup_file->dup_count++;
   }
   if (newfd > curr->fd_max) curr->fd_max = newfd;  // fd_max 갱신
   return newfd;
@@ -364,14 +339,16 @@ static void validate_user_string(const char *str) {
     system_exit(-1);
   }
 }
-static int expend_fd_table(struct thread *curr, size_t size) {  //넣고싶은 값 넣는 것으로 바꿈
-  size = (size > MAX_FILES) ? size : MAX_FILES;
-  // fd MAX_FILES개 만큼만 확장
-  curr->fd_table = (struct file_info **)realloc(
-      curr->fd_table, sizeof(struct file_info *) * (curr->fd_size + size));
+static int expend_fd_table(struct thread *curr, size_t size) {  // MAXFILES의 배수로 ㄱㄱ
+  // if (curr->fd_size >= 512) return -1; //크기 제한
+  size_t size_cnt = size / MAX_FILES + 1;
+  size_t expend_size = size_cnt * MAX_FILES;
+  // MAX_FILES의 배수만큼만 확장
+  curr->fd_table = (struct file **)realloc(curr->fd_table,
+                                           sizeof(struct file *) * (curr->fd_size + expend_size));
   if (curr->fd_table == NULL) return -1;  //재할당에 실패했을 경우
-  memset(curr->fd_table + curr->fd_size, 0, size * (sizeof(struct file_info *)));
-  curr->fd_size += size;
+  memset(curr->fd_table + curr->fd_size, 0, expend_size * (sizeof(struct file *)));
+  curr->fd_size += expend_size;
   return 0;  // 성공적일 경우 0반환
 }
 static struct list *list_return(struct list *t) { return t; }
@@ -379,24 +356,12 @@ static struct file *file_return(struct file *f) { return f; }
 
 void exit_close(int fd) {
   struct thread *curr = thread_current();
-  if (!list_empty(&curr->fd_table[fd]->dup_list)) {  // dup2 관계일경우에
-    // dup_list에서 제거
-    for (struct list_elem *e = list_begin(&curr->fd_table[fd]->dup_list);
-         e != list_end(&curr->fd_table[fd]->dup_list); e = list_next(e)) {
-      struct dup_elem *dup = list_entry(e, struct dup_elem, elem);
-      if (dup->fd == fd) {
-        list_remove(&dup->elem);
-        free(dup);
-        break;
-      }
-    }
-    curr->fd_table[fd]->dup_count--;  // dup_count 바꾸기
+  if (curr->fd_table[fd]->dup_count >= 2) {  // dup2 관계일경우에
+    curr->fd_table[fd]->dup_count--;         // dup_count 바꾸기
   } else {
-    lock_acquire(&filesys_lock);           // 동시접근을 막기 위해
-    file_close(curr->fd_table[fd]->file);  // file 닫아주기
+    lock_acquire(&filesys_lock);     // 동시접근을 막기 위해
+    file_close(curr->fd_table[fd]);  // file 닫아주기
     lock_release(&filesys_lock);
-
-    free(curr->fd_table[fd]);  // file_info 메모리할당 해제
   }
   curr->fd_table[fd] = NULL;  // fd_table에서 빼주기
 }

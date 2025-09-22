@@ -118,9 +118,10 @@ struct thread {
   tid_t parent_tid;           // 내 부모의 tid
 
   /* filesys 용 */
-  struct file_info **fd_table; /* 파일 디스크립터 테이블, 0,1은 이미 예약 */
-  size_t fd_size;              /* fd_table 전체 크기 */
-  size_t fd_max; /* 현재 fd 번호 최대, open 하나당 하나씩 늘려갈 거임*/
+  // struct file_info **fd_table; /* 파일 디스크립터 테이블, 0,1은 이미 예약 */
+  struct file **fd_table;
+  size_t fd_size; /* fd_table 전체 크기 */
+  size_t fd_max;  /* 현재 fd 번호 최대, open 하나당 하나씩 늘려갈 거임*/
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
@@ -192,6 +193,8 @@ bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
 
 struct thread *thread_get_by_tid(tid_t tid);
-struct file_info *get_std_in();
-struct file_info *get_std_out();
+// struct file_info *get_std_in();
+// struct file_info *get_std_out();
+struct file *get_std_in();
+struct file *get_std_out();
 #endif /* threads/thread.h */
