@@ -91,21 +91,15 @@ tid_t process_fork(const char *name, struct intr_frame *if_) {
   }
   aux->parent_if = if_;
   aux->parent = thread_current();
-  // printf("FORK : i'm : %s, forking : %s\n", aux->parent->name, name);
-  // if (!strcmp(name, "child_49_O")) {
-  //   printf("stop!\n");
-  // }
   sema_init(&aux->fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
   tid_t tid;
   tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
   // thread_create 가 실패했을 경우
   if (tid == TID_ERROR) {
-    // printf("fail to create %s\n", name);
     free(aux);
     return TID_ERROR;
   }
   sema_down(&aux->fork_sema);  // fork가 실패했을 경우 얘를 탈출할수 있게 해야함.
-  // printf("escape sema down! forking %s\n", name);
   // tid 검사 (fork 루틴 중 실패했을 경우)
   lock_acquire(&aux->parent->children_lock);
   // child_list 순회
@@ -237,7 +231,6 @@ static void __do_fork(struct fork_aux *aux) {
     }
     current->fd_max = i;  // fd_max 갱신
   }
-  // process_init();
 
   /* 정상적으로 fork 되었음을 알림 */
   lock_acquire(&parent->children_lock);
@@ -257,9 +250,7 @@ static void __do_fork(struct fork_aux *aux) {
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
-  // printf("before semaup\n");
   sema_up(&aux->fork_sema);
-  // printf("after semaup\n");
   system_exit(-1);
 }
 
@@ -291,7 +282,6 @@ int process_exec(void *f_name) {
 
   /* We first kill the current context */
   process_cleanup();
-  // for (i = 0; argv[i] != NULL; i++) printf("exec : argv[%d] : %s\n", i, argv[i]);
   /* And then load the binary */
   success = load(argv, &_if);
 
@@ -322,7 +312,6 @@ int process_wait(tid_t child_tid) {
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
   struct thread *curr = thread_current();
-  // printf("WAIT : i'm %s, waiting tid: %d\n", curr->name, child_tid);
   struct child_info *target_child = NULL;
   /* child_tid로 기다릴 child 스레드 찾기 */
   lock_acquire(&curr->children_lock);  // child_list 순회하니까
@@ -341,7 +330,7 @@ int process_wait(tid_t child_tid) {
   if (!target_child->has_exited)
     sema_down(&target_child->wait_sema);  // 아직 종료 안되었다면 기다리기
   // 종료되었으면
-  /* 여기서 수거작업이 이루어지면 됨 */
+  /* child_list에서 제거 및 elem 메모리 반환 */
   lock_acquire(&curr->children_lock);
   list_remove(&target_child->child_elem);  // child_list에서 삭제
   lock_release(&curr->children_lock);
@@ -359,13 +348,11 @@ void process_exit(void) {
 
   process_cleanup();
   struct thread *curr = thread_current();
-  // printf("fd size : %d, fd_max : %d\n", curr->fd_size, curr->fd_max);
   for (int i = 0; i < curr->fd_size; i++) {
     if (curr->fd_table[i] == get_std_in() || curr->fd_table[i] == get_std_out()) {
-      curr->fd_table[i] = NULL;
-    }
-    if (curr->fd_table[i]) {
-      exit_close(i);
+      curr->fd_table[i] = NULL;  //표준 입출력은 그냥 NULL로 만듬
+    } else if (curr->fd_table[i]) {
+      exit_close(i);  //일반 파일인 경우는 dup2의 경우 반영해서 close
     }
   }
   free(curr->fd_table);  // fd table 반환

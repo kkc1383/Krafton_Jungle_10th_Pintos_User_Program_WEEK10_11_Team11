@@ -251,7 +251,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   lock_acquire(&parent->children_lock);
   list_push_back(&parent->child_list, &child->child_elem);
-  // printf("child pushed!!\n");
   lock_release(&parent->children_lock);
 
   /* userprog 추가 초기화 함수들 */
@@ -261,7 +260,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   t->parent_tid = parent->tid;  // 부모 tid 설정
 
   if (thread_mlfqs) {  // mlfqs일 경우
-    // struct thread *parent = thread_current();
     // 부모 쓰레드의 nice, recent_cpu 물려받기
     if (parent != NULL) {
       t->nice = parent->nice;
@@ -272,8 +270,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   /* fd table 초기화 */
   struct file **new_fd_table = (struct file **)calloc(parent->fd_size, (sizeof(struct file *)));
-  // struct file_info **new_fd_table =
-  //     (struct file_info **)calloc(parent->fd_size, (sizeof(struct file_info *)));
   if (!new_fd_table) {  // 메모리 할당 실패 시
     palloc_free_page(t);
     return TID_ERROR;
@@ -398,7 +394,6 @@ void thread_exit(void) {
   intr_disable();
   lock_acquire(&all_list_lock);
   list_remove(&thread_current()->all_elem);  // all_list에서 제거
-  // printf("removed all list %s\n", thread_current()->name);
   lock_release(&all_list_lock);
   do_schedule(THREAD_DYING);
   NOT_REACHED();

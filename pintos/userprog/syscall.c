@@ -127,11 +127,9 @@ void system_exit(int status) {
   /* child_list에 종료되었음을 기록, status, has_exited 등 */
   // 여기에 한 이유는 status가 process_exit()까지 못간다. 인자로 넘기려니 고칠게 너무많음.
   struct thread *curr = thread_current();
-  // printf("EXIT :  %s\n", curr->name);
   struct thread *parent = thread_get_by_tid(curr->parent_tid);
   if (!parent) {
-    // printf("no parent?\n");
-    // 여기에서 고아 처리
+    // 고아처리
     return;
   }
   lock_acquire(&parent->children_lock);  // child_list 순회하기 때문에
@@ -308,7 +306,6 @@ static void system_close(int fd) {
 }
 static int system_dup2(int oldfd, int newfd) {
   struct thread *curr = thread_current();
-  // printf("dup2 oldfd : %d, newfd: %d\n", oldfd, newfd);
   // oldfd가 유효한 파일 디스크립터가 아니라면 -1 반환 후 종료
   if (oldfd < 0 || curr->fd_table[oldfd] == NULL || newfd < 0) return -1;
   // oldfd와 newfd가 같으면 그냥 newfd 반환 후 종료
@@ -346,7 +343,7 @@ static void validate_user_string(const char *str) {
   }
 }
 static int expend_fd_table(struct thread *curr, size_t size) {  // MAXFILES의 배수로 ㄱㄱ
-  if (curr->fd_size >= 512) return -1;                          //크기 제한두면 안돌아감
+  // if (curr->fd_size >= 512) return -1;                          //크기 제한두면 안돌아감
   size_t size_cnt = size / MAX_FILES + 1;
   size_t expend_size = size_cnt * MAX_FILES;
   // MAX_FILES의 배수만큼만 확장
@@ -357,13 +354,6 @@ static int expend_fd_table(struct thread *curr, size_t size) {  // MAXFILES의 �
   free(curr->fd_table);
   curr->fd_table = new_table;
   curr->fd_size += expend_size;
-  // curr->fd_table = (struct file **)realloc(curr->fd_table,
-  //                                          sizeof(struct file *) * (curr->fd_size +
-  //                                          expend_size));
-  // if (curr->fd_table == NULL) return -1;  //재할당에 실패했을 경우
-  // memset(curr->fd_table + curr->fd_size, 0, expend_size * (sizeof(struct file *)));
-  // memset(curr->fd_table, 0, curr->fd_size * (sizeof(struct file *)));
-  // curr->fd_size += expend_size;
   return 0;  // 성공적일 경우 0반환
 }
 static struct list *list_return(struct list *t) { return t; }
