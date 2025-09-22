@@ -91,15 +91,21 @@ tid_t process_fork(const char *name, struct intr_frame *if_) {
   }
   aux->parent_if = if_;
   aux->parent = thread_current();
+  // printf("FORK : i'm : %s, forking : %s\n", aux->parent->name, name);
+  // if (!strcmp(name, "child_49_O")) {
+  //   printf("stop!\n");
+  // }
   sema_init(&aux->fork_sema, 0);  // 자식프로세스가 완전히 만들어지기 전까지는 나가지 않기 위해서
   tid_t tid;
   tid = thread_create(name, PRI_DEFAULT, __do_fork, aux);
   // thread_create 가 실패했을 경우
   if (tid == TID_ERROR) {
+    // printf("fail to create %s\n", name);
     free(aux);
     return TID_ERROR;
   }
   sema_down(&aux->fork_sema);  // fork가 실패했을 경우 얘를 탈출할수 있게 해야함.
+  // printf("escape sema down! forking %s\n", name);
   // tid 검사 (fork 루틴 중 실패했을 경우)
   lock_acquire(&aux->parent->children_lock);
   // child_list 순회
@@ -212,14 +218,19 @@ static void __do_fork(struct fork_aux *aux) {
 
         if (!has_duplicated) {  //복제해둔 curr fdtable이 없다면 직접 복제
           struct file *new_file = file_duplicate(parent->fd_table[i]);
-          if (!new_file) goto error;
+          if (!new_file) {
+            goto error;
+          }
           current->fd_table[i] = new_file;
           current->fd_table[i]->dup_count = 1;
         }
 
       } else {  // dup2 관계가 아니라면 그냥 복제
         struct file *new_file = file_duplicate(parent->fd_table[i]);
-        if (!new_file) goto error;
+        if (!new_file) {
+          ;
+          goto error;
+        }
         current->fd_table[i] = new_file;
         current->fd_table[i]->dup_count = 1;
       }
@@ -227,7 +238,6 @@ static void __do_fork(struct fork_aux *aux) {
     current->fd_max = i;  // fd_max 갱신
   }
   // process_init();
-  sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
 
   /* 정상적으로 fork 되었음을 알림 */
   lock_acquire(&parent->children_lock);
@@ -242,10 +252,14 @@ static void __do_fork(struct fork_aux *aux) {
   }
   lock_release(&parent->children_lock);
 
+  sema_up(&aux->fork_sema);  // 이제 부모 프로세스가 fork를 탈출할 수 있음.
+
   /* Finally, switch to the newly created process. */
   if (succ) do_iret(&if_);
 error:
+  // printf("before semaup\n");
   sema_up(&aux->fork_sema);
+  // printf("after semaup\n");
   system_exit(-1);
 }
 
@@ -308,6 +322,7 @@ int process_wait(tid_t child_tid) {
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
   struct thread *curr = thread_current();
+  // printf("WAIT : i'm %s, waiting tid: %d\n", curr->name, child_tid);
   struct child_info *target_child = NULL;
   /* child_tid로 기다릴 child 스레드 찾기 */
   lock_acquire(&curr->children_lock);  // child_list 순회하니까
