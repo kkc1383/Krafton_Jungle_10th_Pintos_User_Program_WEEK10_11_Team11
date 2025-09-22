@@ -123,17 +123,16 @@ struct thread {
 
   /* 실행중인 ELF파일 */
   struct file *running_file;
+  bool waited_by_parent;
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
-
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */
   struct supplemental_page_table spt;
 #endif
-
   /* Owned by thread.c. */
   struct intr_frame tf; /* Information for switching */
   unsigned magic;       /* Detects stack overflow. */
@@ -147,6 +146,7 @@ struct child_process {
   struct semaphore wait_sema;
   struct semaphore fork_sema;
   struct list_elem elem;
+  struct list_elem all_elem;
 };
 
 /* If false (default), use round-robin scheduler.
@@ -186,6 +186,7 @@ void do_iret(struct intr_frame *tf);
 
 struct list *get_ready_list(void);
 struct list *get_sleep_list(void);
+struct list *get_all_list(void);
 
 void thread_update_all_priority(void);
 void mlfqs_update_priority(struct thread *t);
@@ -193,5 +194,8 @@ bool thread_priority_less(const struct list_elem *, const struct list_elem *, vo
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
 int fd_allocate(struct thread *t, struct file *f);
+int thread_all_list_size(void);
+struct thread *find_child_thread(tid_t child_tid);
+
 
 #endif /* threads/thread.h */

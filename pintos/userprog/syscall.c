@@ -134,9 +134,12 @@ void syscall_handler(struct intr_frame *f UNUSED) {
 
 /* 유효 주소검사 */
 void validate_ptr(const void *uaddr) {
-  if (uaddr == NULL || !is_user_vaddr(uaddr) || pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
+  if (uaddr == NULL || !is_user_vaddr(uaddr)) {
     sys_exit(-1);
   }
+  // if (pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
+  //   sys_exit(-1);
+  // }
 }
 /* 문자열 검사 */
 void validate_str(const char *str) {
@@ -151,10 +154,7 @@ void validate_str(const char *str) {
 /* buffer + size 가 유효한지 검사 */
 void validate_buffer_size(void *buffer, unsigned size) {
   for (unsigned i = 0; i < size; i++) {
-    // t->pml4
-    if (!is_user_vaddr(buffer + i) || pml4_get_page(thread_current()->pml4, buffer + i) == NULL) {
-      sys_exit(-1);
-    }
+    validate_ptr(buffer + i);
   }
 }
 /* fd -> file 유틸함수 */
@@ -188,7 +188,8 @@ int sys_exec(const char *cmd_line) {
 
   int len = strlen(kern_cmd_line) + 1;
   struct passing_arguments *pargs = palloc_get_page(0);
-  pargs->cp = palloc_get_page(0);
+  struct child_process *cp = palloc_get_page(0);
+  pargs->cp = cp;
 
   memcpy(pargs->full_args, kern_cmd_line, len);
   memcpy(pargs->file_name, kern_cmd_line, FILE_NAME_LEN_MAX + 1);
@@ -202,11 +203,13 @@ int sys_exec(const char *cmd_line) {
   int res = process_exec(pargs);
   if (res < 0) {
     palloc_free_page(kern_cmd_line);
-    kern_cmd_line = NULL;
-    sys_exit(res);
+    // palloc_free_page(pargs);
+    // palloc_free_page(cp);
+    sys_exit(-1);
   }
   palloc_free_page(kern_cmd_line);
-  kern_cmd_line = NULL;
+  // palloc_free_page(pargs);
+  // palloc_free_page(cp);
   NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
 }
 int sys_wait(int pid) {

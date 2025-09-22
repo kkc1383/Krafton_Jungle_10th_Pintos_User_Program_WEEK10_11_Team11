@@ -578,6 +578,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
 
   /* 자식 프로세스 구조체 리스트*/
   list_init(&t->children);
+  t->waited_by_parent = false;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -710,8 +711,14 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    palloc_free_page(victim->self_cp);
-    palloc_free_page(victim);
+    // if (victim->self_cp != NULL) {
+    //   palloc_free_page(victim->self_cp);
+    // }
+    bool can_be_freed = victim->waited_by_parent;
+    if (can_be_freed) {
+      // list_remove(&victim->all_elem);
+      palloc_free_page(victim);
+    }
   }
   thread_current()->status = status;
   schedule();
@@ -780,6 +787,9 @@ struct list *get_ready_list(void) {
 struct list *get_sleep_list(void) {
   return &sleep_list;
 }
+struct list *get_all_list(void) {
+  return &all_list;
+}
 
 bool thread_priority_less(const struct list_elem *a, const struct list_elem *b, void *aux) {
   struct thread *thread_a = list_entry(a, struct thread, elem);
@@ -801,6 +811,9 @@ bool is_not_idle(struct thread *t) { return t != idle_thread; }
 
 /* 파일 디스크립터 할당기 */
 int fd_allocate(struct thread *t, struct file *f) {
+  if (t == NULL || f == NULL) {
+    return -1;
+  }
   for (int i = START_FD; i < FD_MAX; i++) {
     if (t->fd_table[i] == NULL) {
       t->fd_table[i] = f;
@@ -809,3 +822,6 @@ int fd_allocate(struct thread *t, struct file *f) {
   }
   return -1;
 }
+
+/* all_list 사이즈 헬퍼 */
+int thread_all_list_size(void) { return list_size(&all_list); }

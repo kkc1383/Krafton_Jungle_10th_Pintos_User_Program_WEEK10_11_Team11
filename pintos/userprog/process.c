@@ -26,6 +26,8 @@
 #include "vm/vm.h"
 #endif
 
+// static struct lock filesys_lock;
+
 static void process_cleanup(void);
 static bool load(const void *pargs, struct intr_frame *if_);
 static void initd(void *f_name);
@@ -104,36 +106,45 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   if (faux == NULL) {
     return -1;
   }
+
+  /* 자식 프로세스 구조체 */
+  struct child_process *cp = palloc_get_page(0);
+  if (cp == NULL) {
+    printf("자식 생성 실패, 여기 아니냐?");
+    palloc_free_page(faux);
+    return -1;
+  }
+  // printf("[ALLOC] cp @ %p by parent %d\n", cp, thread_current()->tid); // 추가
+
   faux->parent = thread_current();
   faux->if_ = *if_;
+  faux->cp = cp;
 
   tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, faux);
   if (tid == TID_ERROR) {
+    printf("스레드 생성 실패, 여기 아니냐?");
     palloc_free_page(faux);
+    palloc_free_page(cp);
     faux = NULL;
     return TID_ERROR;
   }
-  /* 자식 프로세스 구조체 */
-  faux->cp = palloc_get_page(0);
-  if (faux->cp == NULL) {
-    return TID_ERROR;
-  }
-  list_push_back(&thread_current()->children, &faux->cp->elem);
-  faux->cp->tid = tid;
-  faux->cp->load_success = false;
+  cp->tid = tid;
+  cp->load_success = false;
+  list_push_back(&thread_current()->children, &cp->elem);
 
   /* 동기화 처리 - 자식 load 하는 동안 부모는 블락 */
-  sema_init(&faux->cp->wait_sema, 0);
-  sema_init(&faux->cp->fork_sema, 0);
-  sema_down(&faux->cp->fork_sema);
-
-  if (!faux->cp->load_success) {
-    return -1;
+  sema_init(&cp->wait_sema, 0);
+  sema_init(&cp->fork_sema, 0);
+  // printf("[SEMA-DOWN] 쓰레드 = %s 성공 = %d\n", thread_current()->name, faux->cp->load_success);
+  sema_down(&cp->fork_sema);
+  int res = tid;
+  if (!cp->load_success) {
+    list_remove(&cp->elem);
+    palloc_free_page(cp);
+    //  printf("[FREE-FORK-FAIL] cp @ %p by parent %d\n", cp, thread_current()->tid); // 추가
+    res = -1;
   }
-  palloc_free_page(faux);
-  faux = NULL;
-
-  return tid;
+  return res;
 }
 
 #ifndef VM
@@ -193,26 +204,43 @@ static void __do_fork(void *aux) {
   5. 부모-자식 동기화
   => 1,5 - process_fork(), 나머지는 __do_fork()?
   */
-  struct fork_aux *faux = aux;
-  struct thread *parent = faux->parent;
+  /* fork_aux 복사 후 바로 해제 */
+  struct fork_aux local = *(struct fork_aux *)aux;
+  palloc_free_page(aux);
+
+  struct thread *parent = local.parent;
   struct thread *current = thread_current();
   /* 자식 프로세스 */
-  struct child_process *cp = faux->cp;
+  struct child_process *cp = local.cp;
   current->self_cp = cp;
 
+  if (parent == NULL || cp == NULL) {
+    goto error;
+  }
+
   /* 1.문맥 복사 */
-  memcpy(&current->tf, &faux->if_, sizeof(struct intr_frame));
+  memcpy(&current->tf, &local.if_, sizeof(struct intr_frame));
   current->tf.R.rax = 0;  //자식 반환값은 0
 
   /* 2. 페이지 테이블 복사 */
   current->pml4 = pml4_create();
-  if (current->pml4 == NULL) goto error;
+  if (current->pml4 == NULL) {
+    printf("pml_create 실패");
+    goto error;
+  }
+  // if (parent->pml4 == NULL){
+
+  //   goto error;
+  // }
   process_activate(current);
 #ifdef VM
   supplemental_page_table_init(&current->spt);
   if (!supplemental_page_table_copy(&current->spt, &parent->spt)) goto error;
 #else
-  if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) goto error;
+  if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) {
+    printf("duplicate_pte 실패");
+    goto error;
+  }
 #endif
 
   /* TODO: Your code goes here.
@@ -222,31 +250,53 @@ static void __do_fork(void *aux) {
    * TODO:       the resources of parent.*/
 
   /* 3. 파일 디스크립터 복사 */
+  // lock_init(&filesys_lock);
+  // lock_acquire(&filesys_lock);
   for (int fd = START_FD; fd < FD_MAX; fd++) {
     if (parent->fd_table[fd] != NULL) {
-      fd_allocate(current, file_duplicate(parent->fd_table[fd]));
+      struct file *f = file_duplicate(parent->fd_table[fd]);
+      if (f != NULL) {
+        fd_allocate(current, f);
+      } else {
+        printf("파일복사 실패");
+        goto error;
+      }
     }
   }
+  // lock_release(&filesys_lock);
   // hex_dump((uintptr_t)&current->tf, &current->tf, sizeof(struct intr_frame), true);
 
   /* 동기화 처리 및 문맥전환 */
-  faux->cp->load_success = true;
-  sema_up(&faux->cp->fork_sema);
+  if (&cp->fork_sema != NULL) {
+    cp->load_success = true;
+    // printf("[SEMA-UP] 쓰레드 = %s 성공 = %d\n", current->name, cp->load_success);
+    sema_up(&cp->fork_sema);
+  }
   do_iret(&current->tf);
 
 error:
   /* fork 실패 시 자원해제 */
-  process_cleanup();
-  for (int fd = 0; fd < FD_MAX; fd++) {
-    if (current->fd_table[fd] != NULL) {
-      file_close(current->fd_table[fd]);
-      current->fd_table[fd] = NULL;
-    }
-  }
-  sema_up(&faux->cp->fork_sema);
-  sys_exit(-1);
+  // /* fd 테이블 닫기 */
+  // for (int fd = START_FD; fd < FD_MAX; fd++) {
+  //   if (current->fd_table[fd] != NULL) {
+  //     file_close(current->fd_table[fd]);
+  //     current->fd_table[fd] = NULL;
+  //   }
+  // }
+  // if (current->pml4 != NULL) {
+  //   pml4_destroy(current->pml4);  // 지금까지 매핑된 페이지 전부 해제
+  //   current->pml4 = NULL;
+  // }
 
-  // thread_exit();
+  if (&cp->fork_sema != NULL) {
+    // printf("[SEMA-UP] 쓰레드 = %s 실패 = %d\n", current->name, cp->load_success);
+    sema_up(&cp->fork_sema);
+    // palloc_free_page(cp);
+  }
+  // printf("[do_fork]parent children list size = %d\n", list_size(&parent->children));
+  // list_remove(&cp->elem);
+  // sys_exit(-1);
+  thread_exit();
 }
 
 /* Switch the current execution context to the f_name.
@@ -274,12 +324,12 @@ int process_exec(void *pargs) {
 
   /* If load failed, quit. */
   if (!success) {
+    palloc_free_page(pa);
     return -1;
   }
 
   /* 인자전달 구조체 free */
   palloc_free_page(pa);
-  pa = NULL;
   /* Start switched process. */
   do_iret(&_if);
   NOT_REACHED();
@@ -298,32 +348,54 @@ int process_wait(tid_t child_tid UNUSED) {
   /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
    * XXX:       to add infinite loop here before
    * XXX:       implementing the process_wait. */
-  if (child_tid < 0) {
-    return -1;
-  }
+  // if (child_tid < 0) {
+  //   return -1;
+  // }
   struct child_process *cp = find_child_process(thread_current(), child_tid);
   if (cp == NULL) {
+    return -1;
+  }
+  struct thread *ct = find_child_thread(child_tid);
+  if (ct == NULL) {
     return -1;
   }
 
   sema_down(&cp->wait_sema);
   int status = cp->exit_status;
-  // printf("[WAIT] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
+  // printf("[WAIT1] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
+  // printf("[WAIT2] 쓰레드 = %s, all_list size = %d\n", thread_current()->name, thread_all_list_size());
+  // printf("[WAIT3]child list size = %d\n", list_size(&thread_current()->children));
   list_remove(&cp->elem);
-  // palloc_free_page(cp);
-  // cp = NULL;
+  palloc_free_page(cp);
+  // printf("[FREE-WAIT] cp @ %p by parent %d for child %d\n", cp, thread_current()->tid, child_tid); // 추가
+  ct->waited_by_parent = true;
+  // list_remove(&ct->all_elem);
+  // palloc_free_page(ct);
+
   return status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void) {
+  /* TODO: Your code goes here.
+   * TODO: Implement process termination message (see
+   * TODO: project2/process_termination.html).
+   * TODO: We recommend you to implement process resource cleanup here. */
   struct thread *curr = thread_current();
+
+  /* 고아 정리 - 이거 안타는걸 봐선 고아따윈 없다는건데... */
+  // struct list_elem *e;
+  // for (e = list_begin(&curr->children); e != list_end(&curr->children); e = list_next(e)) {
+  //   struct child_process *cp = list_entry(e, struct child_process, elem);
+  //   if (cp != NULL) {
+  //     palloc_free_page(cp);
+  //   }
+  // }
 
   /* 자식이 종료되었으면 부모 스레드 실행재개 */
   if (curr->self_cp != NULL) {
     // printf("[EXIT] %s (%d) -> %d\n", curr->name, curr->tid, curr->self_cp->exit_status);
     sema_up(&curr->self_cp->wait_sema);
-    curr->self_cp = NULL;
   }
 
   /* 실행중인 ELF 파일에 대한 쓰기권한 복귀 */
@@ -334,19 +406,20 @@ void process_exit(void) {
   }
 
   /* fd 테이블 닫기 */
-  for (int fd = 0; fd < FD_MAX; fd++) {
+  for (int fd = START_FD; fd < FD_MAX; fd++) {
     if (curr->fd_table[fd] != NULL) {
       file_close(curr->fd_table[fd]);
       curr->fd_table[fd] = NULL;
     }
   }
 
-  /* TODO: Your code goes here.
-   * TODO: Implement process termination message (see
-   * TODO: project2/process_termination.html).
-   * TODO: We recommend you to implement process resource cleanup here. */
-
-  process_cleanup();
+  /* 페이지 테이블 비우기 */
+  if (curr->pml4 != NULL) {
+    process_cleanup();
+  }
+  // if (curr->pml4 != NULL) {
+  //   printf("[PAGE TABLE] %d\n", curr->pml4);
+  // }
 }
 
 /* Free the current process's resources. */
@@ -613,6 +686,19 @@ struct child_process *find_child_process(struct thread *parent, tid_t child_tid)
     struct child_process *cp = list_entry(e, struct child_process, elem);
     if (cp->tid == child_tid) {
       return cp;
+    }
+  }
+  return NULL;
+}
+
+/* 스레드 찾기 */
+struct thread *find_child_thread(tid_t child_tid) {
+  struct list_elem *e;
+  for (e = list_begin(get_all_list()); e != list_end(get_all_list()); e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, all_elem);
+    //printf("모든 스레드 정보 name = %s\n", t->name);
+    if (t->tid == child_tid) {
+      return t;
     }
   }
   return NULL;

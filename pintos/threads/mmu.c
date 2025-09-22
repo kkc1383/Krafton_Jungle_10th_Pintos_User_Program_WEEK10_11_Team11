@@ -10,7 +10,6 @@
 #include "threads/pte.h"
 #include "threads/thread.h"
 
-
 static uint64_t *pgdir_walk(uint64_t *pdp, const uint64_t va, int create) {
   int idx = PDX(va);
   if (pdp) {
@@ -165,6 +164,7 @@ static void pdpe_destroy(uint64_t *pdpe) {
 
 /* Destroys pml4e, freeing all the pages it references. */
 void pml4_destroy(uint64_t *pml4) {
+  // printf("[PML4 DESTROY] start %p\n", pml4);
   if (pml4 == NULL) return;
   ASSERT(pml4 != base_pml4);
 
@@ -172,6 +172,7 @@ void pml4_destroy(uint64_t *pml4) {
   uint64_t *pdpe = ptov((uint64_t *)pml4[0]);
   if (((uint64_t)pdpe) & PTE_P) pdpe_destroy((void *)PTE_ADDR(pdpe));
   palloc_free_page((void *)pml4);
+  // printf("[PML4 DESTROY] end %p\n", pml4);
 }
 
 /* Loads page directory PD into the CPU's page directory base

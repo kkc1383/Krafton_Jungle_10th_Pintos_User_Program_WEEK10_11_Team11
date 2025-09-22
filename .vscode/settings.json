@@ -28,6 +28,7 @@
         "new": "c",
         "ostream": "c",
         "streambuf": "c",
-        "*.inc": "c"
+        "*.inc": "c",
+        "algorithm": "c"
     }
 }

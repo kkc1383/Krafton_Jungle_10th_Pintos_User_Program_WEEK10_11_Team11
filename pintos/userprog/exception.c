@@ -131,10 +131,11 @@ static void page_fault(struct intr_frame *f) {
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  if (user) {
-	sys_exit(-1);
-  } else {
-  }
+  //   if (user) {
+
+  //   } else {
+  //   }
+  sys_exit(-1);
 
 #ifdef VM
   /* For project 3 and later. */
