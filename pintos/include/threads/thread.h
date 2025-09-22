@@ -32,8 +32,9 @@ typedef int tid_t;
 #define PRI_MAX 63     /* Highest priority. */
 
 /* 파일 디스크립터 테이블 관련 */
-#define FD_MAX 128
+#define FD_MAX 512
 #define START_FD 2
+
 
 /* A kernel thread or user process.
  *
@@ -114,21 +115,10 @@ struct thread {
   int nice;           /* CPU를 양보하는 척도 (-20~20) */
   fixed_t recent_cpu; /* 최근 CPU 사용량 (fixed-point)*/
 
-  /* 자식프로세스 관리 */
-  struct list children;
-  struct child_process *self_cp;
-
-  /* 파일디스크립터 테이블 */
-  struct file *fd_table[FD_MAX];
-
-  /* 실행중인 ELF파일 */
-  struct file *running_file;
-  bool waited_by_parent;
-
-#ifdef USERPROG
+  // #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
-#endif
+// #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */
   struct supplemental_page_table spt;
@@ -136,17 +126,27 @@ struct thread {
   /* Owned by thread.c. */
   struct intr_frame tf; /* Information for switching */
   unsigned magic;       /* Detects stack overflow. */
+
+  /* userprog 관련 추가사항 */
+  /* 자식 프로세스 관리 */
+  struct child_process *self_cp;  // 자신의 cp
+  struct list children;           // 자식 리스트 관리(cp)
+  /* 파일디스크립터 테이블 */
+  struct file **fd_table;
+  int max_fd;
+  /* 실행중인 ELF파일 */
+  struct file *running_file;
 };
 
 /* 자식 프로세스 구조체 */
 struct child_process {
-  tid_t tid;
-  int exit_status;
-  bool load_success;
-  struct semaphore wait_sema;
-  struct semaphore fork_sema;
+  tid_t tid;          // 자식의 TID
+  int exit_status;    // 자식의 종료 코드
+  bool load_success;  // exec() 시 로딩 성공 여부
+  /* 동기화를 위한 세마포어 */
+  struct semaphore exit_sema;  // 자식의 종료를 부모가 기다릴 때 사용
+  // struct semaphore load_sema;  // 자식의 exec() 로딩을 부모가 기다릴 때 사용
   struct list_elem elem;
-  struct list_elem all_elem;
 };
 
 /* If false (default), use round-robin scheduler.
@@ -193,9 +193,7 @@ void mlfqs_update_priority(struct thread *t);
 bool thread_priority_less(const struct list_elem *, const struct list_elem *, void *);
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
-int fd_allocate(struct thread *t, struct file *f);
-int thread_all_list_size(void);
+
+/* uesrprog */
 struct thread *find_child_thread(tid_t child_tid);
-
-
 #endif /* threads/thread.h */

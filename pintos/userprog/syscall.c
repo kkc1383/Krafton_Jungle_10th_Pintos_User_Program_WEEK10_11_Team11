@@ -160,7 +160,7 @@ void validate_buffer_size(void *buffer, unsigned size) {
 /* fd -> file 유틸함수 */
 struct file *fd_to_file(int fd) {
   struct thread *t = thread_current();
-  if (fd < 0 || fd > FD_MAX) {
+  if (fd < 0 || fd > t->max_fd) {
     return NULL;
   }
   return t->fd_table[fd];
@@ -169,9 +169,7 @@ struct file *fd_to_file(int fd) {
 void sys_halt() { power_off(); }
 void sys_exit(int status) {
   struct thread *t = thread_current();
-  if (t->self_cp != NULL) {
-    t->self_cp->exit_status = status;
-  }
+  t->self_cp->exit_status = status;
   printf("%s: exit(%d)\n", t->name, status);
   thread_exit();
 }
@@ -188,28 +186,20 @@ int sys_exec(const char *cmd_line) {
 
   int len = strlen(kern_cmd_line) + 1;
   struct passing_arguments *pargs = palloc_get_page(0);
-  struct child_process *cp = palloc_get_page(0);
-  pargs->cp = cp;
-
   memcpy(pargs->full_args, kern_cmd_line, len);
   memcpy(pargs->file_name, kern_cmd_line, FILE_NAME_LEN_MAX + 1);
   char *space = strchr(pargs->file_name, ' ');
   if (space) {
     *space = '\0';
   }
-  // exec() 호출자는 항상 자식프로세스
-  pargs->cp = thread_current()->self_cp;
-
   int res = process_exec(pargs);
   if (res < 0) {
     palloc_free_page(kern_cmd_line);
     // palloc_free_page(pargs);
-    // palloc_free_page(cp);
     sys_exit(-1);
   }
   palloc_free_page(kern_cmd_line);
   // palloc_free_page(pargs);
-  // palloc_free_page(cp);
   NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
 }
 int sys_wait(int pid) {
@@ -236,7 +226,6 @@ bool sys_remove(const char *file) {
 }
 int sys_open(const char *file) {
   validate_str(file);
-  int fd = 0;
   struct thread *t = thread_current();
   lock_acquire(&filesys_lock);
   struct file *f = filesys_open(file);
@@ -244,14 +233,20 @@ int sys_open(const char *file) {
     lock_release(&filesys_lock);
     return -1;
   }
-  fd = fd_allocate(t, f);
+  int fd = t->max_fd;
+  if (fd > FD_MAX - 1 || fd < 0) {
+    sys_exit(-1);
+  }
+  t->fd_table[fd] = f;
+  t->max_fd++;
+  // printf("[OPEN] 쓰레드 = %s FD = %d\n", t->name, fd);
   lock_release(&filesys_lock);
   return fd;
 }
 int sys_filesize(int fd) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -267,7 +262,7 @@ int sys_read(int fd, void *buffer, unsigned size) {
   off_t bytes_read;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -285,7 +280,7 @@ int sys_write(int fd, const void *buffer, unsigned size) {
   off_t bytes_read;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (fd == 1) {
@@ -306,7 +301,7 @@ int sys_write(int fd, const void *buffer, unsigned size) {
 void sys_seek(int fd, unsigned position) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -320,7 +315,7 @@ unsigned sys_tell(int fd) {
   off_t position = -1;
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {
@@ -334,7 +329,7 @@ unsigned sys_tell(int fd) {
 void sys_close(int fd) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);
-  if (fd > FD_MAX || fd < 0) {
+  if (fd > t->max_fd || fd < 0) {
     sys_exit(-1);
   }
   if (f == NULL) {

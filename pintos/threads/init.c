@@ -89,6 +89,8 @@ int main(void) {
   malloc_init();
   paging_init(mem_end);
 
+  
+
 #ifdef USERPROG
   tss_init();
   gdt_init();

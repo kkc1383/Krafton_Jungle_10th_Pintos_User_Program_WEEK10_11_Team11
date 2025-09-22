@@ -201,7 +201,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   struct thread *t;
   struct thread *parent = thread_current();
   tid_t tid;
-  struct child_process *cp;
 
   ASSERT(function != NULL);
 
@@ -233,6 +232,15 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   t->tf.ss = SEL_KDSEG;
   t->tf.cs = SEL_KCSEG;
   t->tf.eflags = FLAG_IF;
+
+  /* userprog */
+  /* FD 테이블 페이지 할당 */
+  t->fd_table = palloc_get_page(PAL_ZERO);
+  if (t->fd_table == NULL) {
+    // list_remove(&t->all_elem);
+    palloc_free_page(t);
+    return TID_ERROR;
+  }
 
   /* Add to run queue. */
   thread_unblock(t);
@@ -321,7 +329,6 @@ tid_t thread_tid(void) { return thread_current()->tid; }
    returns to the caller. */
 void thread_exit(void) {
   ASSERT(!intr_context());
-
 #ifdef USERPROG
   process_exit();
 #endif
@@ -576,9 +583,9 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   t->nice = 0;
   t->recent_cpu = INT_TO_FP(0);
 
-  /* 자식 프로세스 구조체 리스트*/
+  /* userprog */
   list_init(&t->children);
-  t->waited_by_parent = false;
+  t->max_fd = START_FD;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -711,14 +718,10 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    // if (victim->self_cp != NULL) {
-    //   palloc_free_page(victim->self_cp);
+    // if (victim->fd_table != NULL) {
+    //   palloc_free_page(victim->fd_table);
     // }
-    bool can_be_freed = victim->waited_by_parent;
-    if (can_be_freed) {
-      // list_remove(&victim->all_elem);
-      palloc_free_page(victim);
-    }
+    palloc_free_page(victim);
   }
   thread_current()->status = status;
   schedule();
@@ -808,20 +811,3 @@ int max_priority_mlfqs_queue(void) {  // mlfqs에서 존재하는 ready_thread �
 }
 
 bool is_not_idle(struct thread *t) { return t != idle_thread; }
-
-/* 파일 디스크립터 할당기 */
-int fd_allocate(struct thread *t, struct file *f) {
-  if (t == NULL || f == NULL) {
-    return -1;
-  }
-  for (int i = START_FD; i < FD_MAX; i++) {
-    if (t->fd_table[i] == NULL) {
-      t->fd_table[i] = f;
-      return i;
-    }
-  }
-  return -1;
-}
-
-/* all_list 사이즈 헬퍼 */
-int thread_all_list_size(void) { return list_size(&all_list); }
