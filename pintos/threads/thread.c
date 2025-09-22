@@ -461,6 +461,7 @@ void thread_update_all_priority(void) {
   struct list new_ready_queue;  // ready 큐 임시 저장(싹다 뺐다가 싹다 넣을 거임)
   list_init(&new_ready_queue);  // new_ready 큐 초기화
 
+  lock_acquire(&all_list_lock);
   /* all list 순회하며 priority 갱신 */
   for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
     struct thread *t = list_entry(e, struct thread, all_elem);
@@ -471,7 +472,7 @@ void thread_update_all_priority(void) {
     }
     mlfqs_update_priority(t);  // priority 조정
   }
-
+  lock_release(&all_list_lock);
   // ready 큐들은 다시 다중 큐에 집어 넣기
   while (!list_empty(&new_ready_queue)) {
     e = list_pop_front(&new_ready_queue);
@@ -569,12 +570,15 @@ int thread_get_recent_cpu(void) {
 void thread_update_all_recent_cpu(void) {
   struct list_elem *e;  // thread_list 순회 시 사용하는 iterator
 
+  lock_acquire(&all_list_lock);
   /* all list 순회하며 recent_cpu 갱신 */
   for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
     struct thread *t = list_entry(e, struct thread, all_elem);
     if (t != idle_thread) thread_update_recent_cpu(t);
   }
+  lock_release(&all_list_lock);
 }
+
 // 각 리스트 별로 매크로 떡칠인 라인을 넣자니 너무 지저분해서 따로 함수로 만듬
 /* recent_cpu = load_avg * 2 / (load_avg * 2 + 1) * recent_cpu  + nice */
 static void thread_update_recent_cpu(struct thread *t) {
@@ -894,19 +898,19 @@ struct thread *thread_get_by_tid(tid_t tid) {
   return NULL;
 }
 
-struct thread *thread_return(struct list_elem *t) {
-  return list_entry(t, struct thread, elem);
-}
-struct child_info *child_return(struct list_elem *e) {
-  return list_entry(e, struct child_info, child_elem);
-}
-struct thread *all_thread_return(struct list_elem *t) {
-  return list_entry(t, struct thread, all_elem);
-}
-
 struct file *get_std_in() {
   return std_in;
 }
 struct file *get_std_out() {
   return std_out;
+}
+
+struct thread *thread_return(struct list_elem *t) {  // gdb 디버깅용
+  return list_entry(t, struct thread, elem);
+}
+struct child_info *child_return(struct list_elem *e) {  // gdb 디버깅용
+  return list_entry(e, struct child_info, child_elem);
+}
+struct thread *all_thread_return(struct list_elem *t) {  // gdb 디버깅용
+  return list_entry(t, struct thread, all_elem);
 }

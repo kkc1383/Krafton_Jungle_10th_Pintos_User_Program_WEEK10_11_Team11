@@ -198,8 +198,25 @@ static void __do_fork(struct fork_aux *aux) {
       current->fd_table[i] = parent->fd_table[i];
     } else {
       if (parent->fd_table[i]->dup_count >= 2) {  // dup2 관계라면
-        current->fd_table[i] = parent->fd_table[i];
-        current->fd_table[i]->dup_count++;
+
+        /* curr fdtable에서 복제할지 말지 결정*/
+        bool has_duplicated = false;
+        for (int j = 0; j < i; j++) {  // dup2쌍중에서 가장 index가 작은쪽이 fdtable을 복제
+          if (parent->fd_table[i] == parent->fd_table[j]) {
+            has_duplicated = true;
+            current->fd_table[i] = current->fd_table[j];
+            current->fd_table[j]->dup_count++;
+            break;
+          }
+        }
+
+        if (!has_duplicated) {  //복제해둔 curr fdtable이 없다면 직접 복제
+          struct file *new_file = file_duplicate(parent->fd_table[i]);
+          if (!new_file) goto error;
+          current->fd_table[i] = new_file;
+          current->fd_table[i]->dup_count = 1;
+        }
+
       } else {  // dup2 관계가 아니라면 그냥 복제
         struct file *new_file = file_duplicate(parent->fd_table[i]);
         if (!new_file) goto error;
@@ -310,7 +327,9 @@ int process_wait(tid_t child_tid) {
     sema_down(&target_child->wait_sema);  // 아직 종료 안되었다면 기다리기
   // 종료되었으면
   /* 여기서 수거작업이 이루어지면 됨 */
+  lock_acquire(&curr->children_lock);
   list_remove(&target_child->child_elem);  // child_list에서 삭제
+  lock_release(&curr->children_lock);
   int child_exit_status = target_child->exit_status;
   free(target_child);
   return child_exit_status;

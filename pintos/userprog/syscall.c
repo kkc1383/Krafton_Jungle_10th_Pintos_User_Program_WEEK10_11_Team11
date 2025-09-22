@@ -340,7 +340,7 @@ static void validate_user_string(const char *str) {
   }
 }
 static int expend_fd_table(struct thread *curr, size_t size) {  // MAXFILES의 배수로 ㄱㄱ
-  // if (curr->fd_size >= 512) return -1; //크기 제한
+  // if (curr->fd_size >= 512) return -1;                          //크기 제한두면 안돌아감
   size_t size_cnt = size / MAX_FILES + 1;
   size_t expend_size = size_cnt * MAX_FILES;
   // MAX_FILES의 배수만큼만 확장
