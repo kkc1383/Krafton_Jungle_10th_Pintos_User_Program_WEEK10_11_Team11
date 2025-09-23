@@ -21,6 +21,7 @@
 #include "userprog/gdt.h"
 #include "userprog/syscall.h"
 #include "userprog/tss.h"
+#include "threads/malloc.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -102,16 +103,16 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   => 1,5 - process_fork(), 나머지는 __do_fork()
   */
   // hex_dump((uintptr_t)if_, if_, sizeof *if_, true);
-  struct fork_aux *faux = palloc_get_page(0);
+  struct fork_aux *faux = malloc(sizeof(struct fork_aux));
   if (faux == NULL) {
     return -1;
   }
 
   /* 자식 프로세스 구조체 */
-  struct child_process *cp = palloc_get_page(0);
+  struct child_process *cp = malloc(sizeof(struct child_process));
   if (cp == NULL) {
-    printf("자식 생성 실패, 여기 아니냐?");
-    palloc_free_page(faux);
+    //printf("자식 생성 실패, 여기 아니냐?");
+    free(faux);
     return -1;
   }
   // printf("[ALLOC] cp @ %p by parent %d\n", cp, thread_current()->tid); // 추가
@@ -122,14 +123,16 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
 
   tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, faux);
   if (tid == TID_ERROR) {
-    printf("스레드 생성 실패, 여기 아니냐?");
-    palloc_free_page(faux);
-    palloc_free_page(cp);
+    //printf("스레드 생성 실패, 여기 아니냐?");
+    free(faux);
+    free(cp);
     faux = NULL;
     return TID_ERROR;
   }
   cp->tid = tid;
   cp->load_success = false;
+  cp->exited = false;
+  cp->waited = false;
   list_push_back(&thread_current()->children, &cp->elem);
 
   /* 동기화 처리 - 자식 load 하는 동안 부모는 블락 */
@@ -140,7 +143,7 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   int res = tid;
   if (!cp->load_success) {
     list_remove(&cp->elem);
-    palloc_free_page(cp);
+    free(cp);
     //  printf("[FREE-FORK-FAIL] cp @ %p by parent %d\n", cp, thread_current()->tid); // 추가
     res = -1;
   }
@@ -206,7 +209,7 @@ static void __do_fork(void *aux) {
   */
   /* fork_aux 복사 후 바로 해제 */
   struct fork_aux local = *(struct fork_aux *)aux;
-  palloc_free_page(aux);
+  free(aux);
 
   struct thread *parent = local.parent;
   struct thread *current = thread_current();
@@ -225,7 +228,7 @@ static void __do_fork(void *aux) {
   /* 2. 페이지 테이블 복사 */
   current->pml4 = pml4_create();
   if (current->pml4 == NULL) {
-    printf("pml_create 실패");
+    //printf("pml_create 실패");
     goto error;
   }
   // if (parent->pml4 == NULL){
@@ -238,7 +241,7 @@ static void __do_fork(void *aux) {
   if (!supplemental_page_table_copy(&current->spt, &parent->spt)) goto error;
 #else
   if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) {
-    printf("duplicate_pte 실패");
+    //printf("duplicate_pte 실패");
     goto error;
   }
 #endif
@@ -258,7 +261,7 @@ static void __do_fork(void *aux) {
       if (f != NULL) {
         fd_allocate(current, f);
       } else {
-        printf("파일복사 실패");
+        //printf("파일복사 실패");
         goto error;
       }
     }
@@ -355,20 +358,22 @@ int process_wait(tid_t child_tid UNUSED) {
   if (cp == NULL) {
     return -1;
   }
+  cp->waited = true;
   struct thread *ct = find_child_thread(child_tid);
   if (ct == NULL) {
     return -1;
   }
 
-  sema_down(&cp->wait_sema);
+  if (!cp->exited) {
+    sema_down(&cp->wait_sema);
+  }
   int status = cp->exit_status;
   // printf("[WAIT1] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
   // printf("[WAIT2] 쓰레드 = %s, all_list size = %d\n", thread_current()->name, thread_all_list_size());
   // printf("[WAIT3]child list size = %d\n", list_size(&thread_current()->children));
   list_remove(&cp->elem);
-  palloc_free_page(cp);
+  free(cp);
   // printf("[FREE-WAIT] cp @ %p by parent %d for child %d\n", cp, thread_current()->tid, child_tid); // 추가
-  ct->waited_by_parent = true;
   // list_remove(&ct->all_elem);
   // palloc_free_page(ct);
 
@@ -395,6 +400,7 @@ void process_exit(void) {
   /* 자식이 종료되었으면 부모 스레드 실행재개 */
   if (curr->self_cp != NULL) {
     // printf("[EXIT] %s (%d) -> %d\n", curr->name, curr->tid, curr->self_cp->exit_status);
+    curr->self_cp->exited = true;
     sema_up(&curr->self_cp->wait_sema);
   }
 
@@ -684,6 +690,10 @@ struct child_process *find_child_process(struct thread *parent, tid_t child_tid)
   struct list_elem *e;
   for (e = list_begin(&parent->children); e != list_end(&parent->children); e = list_next(e)) {
     struct child_process *cp = list_entry(e, struct child_process, elem);
+    if(cp->waited){
+      return NULL;
+    }
+
     if (cp->tid == child_tid) {
       return cp;
     }

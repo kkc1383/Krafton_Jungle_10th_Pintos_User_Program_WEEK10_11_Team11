@@ -123,12 +123,9 @@ struct thread {
 
   /* 실행중인 ELF파일 */
   struct file *running_file;
-  bool waited_by_parent;
-
-#ifdef USERPROG
+  
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
-#endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */
   struct supplemental_page_table spt;
@@ -147,6 +144,8 @@ struct child_process {
   struct semaphore fork_sema;
   struct list_elem elem;
   struct list_elem all_elem;
+  bool waited;
+  bool exited;
 };
 
 /* If false (default), use round-robin scheduler.

@@ -578,7 +578,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
 
   /* 자식 프로세스 구조체 리스트*/
   list_init(&t->children);
-  t->waited_by_parent = false;
+  // t->waited_by_parent = false;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -711,14 +711,7 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    // if (victim->self_cp != NULL) {
-    //   palloc_free_page(victim->self_cp);
-    // }
-    bool can_be_freed = victim->waited_by_parent;
-    if (can_be_freed) {
-      // list_remove(&victim->all_elem);
-      palloc_free_page(victim);
-    }
+    palloc_free_page(victim);
   }
   thread_current()->status = status;
   schedule();
