@@ -224,25 +224,28 @@ bool sys_remove(const char *file) {
   lock_release(&filesys_lock);
   return res;
 }
-int sys_open(const char *file) {
-  validate_str(file);
-  struct thread *t = thread_current();
+
+int sys_open(const char *path) {
+  validate_str(path);
   lock_acquire(&filesys_lock);
-  struct file *f = filesys_open(file);
-  if (f == NULL) {
+  struct file *f = filesys_open(path);
+  lock_release(&filesys_lock);
+  if (f == NULL) return -1;
+  struct thread *t = thread_current();
+  int fd = -1;
+  for (int i = 2; i < FD_MAX; i++) {
+    if (t->fd_table[i] == NULL) { fd = i; break; }
+  }
+  if (fd == -1) {
+    lock_acquire(&filesys_lock);
+    file_close(f);
     lock_release(&filesys_lock);
     return -1;
   }
-  int fd = t->max_fd;
-  if (fd > FD_MAX - 1 || fd < 0) {
-    sys_exit(-1);
-  }
   t->fd_table[fd] = f;
-  t->max_fd++;
-  // printf("[OPEN] 쓰레드 = %s FD = %d\n", t->name, fd);
-  lock_release(&filesys_lock);
   return fd;
 }
+
 int sys_filesize(int fd) {
   struct thread *t = thread_current();
   struct file *f = fd_to_file(fd);

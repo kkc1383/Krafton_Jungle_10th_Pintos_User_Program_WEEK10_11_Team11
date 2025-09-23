@@ -136,6 +136,7 @@ struct thread {
   int max_fd;
   /* 실행중인 ELF파일 */
   struct file *running_file;
+  bool parent_waited;
 };
 
 /* 자식 프로세스 구조체 */
@@ -196,4 +197,5 @@ int max_priority_mlfqs_queue(void);
 
 /* uesrprog */
 struct thread *find_child_thread(tid_t child_tid);
+int fd_allocate(struct thread *t, struct file *f);
 #endif /* threads/thread.h */

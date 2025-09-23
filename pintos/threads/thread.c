@@ -11,6 +11,7 @@
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
@@ -66,6 +67,7 @@ static unsigned thread_ticks; /* # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+static struct lock all_list_lock;
 
 static void kernel_thread(thread_func *, void *aux);
 
@@ -120,6 +122,7 @@ void thread_init(void) {
   list_init(&sleep_list);
   list_init(&all_list);
   list_init(&destruction_req);
+  lock_init(&all_list_lock);
 
   /* mlfqs 초기화 */
   load_avg = INT_TO_FP(0); /* load_avg 를 0.0으로 초기화 */
@@ -211,7 +214,6 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* Initialize thread. */
   init_thread(t, name, priority);
   tid = t->tid = allocate_tid();
-  list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
 
   if (thread_mlfqs) {  // mlfqs일 경우
     // 부모 쓰레드의 nice, recent_cpu 물려받기
@@ -235,13 +237,16 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   /* userprog */
   /* FD 테이블 페이지 할당 */
-  t->fd_table = palloc_get_page(PAL_ZERO);
+  t->fd_table = calloc(FD_MAX, sizeof(struct file *));
   if (t->fd_table == NULL) {
-    // list_remove(&t->all_elem);
+    list_remove(&t->all_elem);
     palloc_free_page(t);
     return TID_ERROR;
   }
 
+  lock_acquire(&all_list_lock);
+  list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
+  lock_release(&all_list_lock);
   /* Add to run queue. */
   thread_unblock(t);
 
@@ -586,6 +591,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   /* userprog */
   list_init(&t->children);
   t->max_fd = START_FD;
+  t->parent_waited = false;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -718,10 +724,9 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    // if (victim->fd_table != NULL) {
-    //   palloc_free_page(victim->fd_table);
-    // }
-    palloc_free_page(victim);
+    if (victim->parent_waited) {
+      palloc_free_page(victim);
+    }
   }
   thread_current()->status = status;
   schedule();
@@ -811,3 +816,20 @@ int max_priority_mlfqs_queue(void) {  // mlfqs에서 존재하는 ready_thread �
 }
 
 bool is_not_idle(struct thread *t) { return t != idle_thread; }
+
+/* 파일 디스크립터 할당기 */
+int fd_allocate(struct thread *t, struct file *f) {
+  if (t == NULL || f == NULL) {
+    return -1;
+  }
+  for (int i = START_FD; i < FD_MAX; i++) {
+    if (t->fd_table[i] == NULL) {
+      t->fd_table[i] = f;
+      if (i > t->max_fd) {
+        t->max_fd = i;
+      }
+      return i;
+    }
+  }
+  return -1;
+}

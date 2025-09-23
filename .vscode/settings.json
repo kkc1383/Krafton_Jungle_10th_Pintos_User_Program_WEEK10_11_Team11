@@ -29,6 +29,8 @@
         "ostream": "c",
         "streambuf": "c",
         "*.inc": "c",
-        "algorithm": "c"
+        "algorithm": "c",
+        "cstdlib": "c",
+        "malloc.h": "c"
     }
 }

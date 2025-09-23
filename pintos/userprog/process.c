@@ -14,6 +14,7 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/mmu.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
@@ -26,7 +27,7 @@
 #include "vm/vm.h"
 #endif
 
-// static struct lock filesys_lock;
+static struct lock child_lock;
 
 static void process_cleanup(void);
 static bool load(const void *pargs, struct intr_frame *if_);
@@ -90,6 +91,7 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   struct thread *parent = thread_current();
   struct semaphore fork_sema;
   sema_init(&fork_sema, 0);
+  lock_init(&child_lock);
 
   /* __do_fork 전달 구조체 */
   struct fork_aux faux;
@@ -98,31 +100,34 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   faux.fork_sema = &fork_sema;
   faux.fork_success = false;
 
-  // struct child_process *cp = malloc(sizeof(struct child_process));
-  // if (cp == NULL) {
-  //   return TID_ERROR;
-  // }
+  struct child_process *cp = malloc(sizeof(struct child_process));
+  if (cp == NULL) {
+    return TID_ERROR;
+  }
 
-  // cp->exit_status = 0;
-  // sema_init(&cp->exit_sema, 0);
-  // list_push_back(&thread_current()->children, &cp->elem);
-  // faux.cp = cp;
+  cp->exit_status = 0;
+  sema_init(&cp->exit_sema, 0);
+  faux.cp = cp;
 
-  printf("[PROCESS_FORK] 쓰레드 = %s\n", parent->name);
-
+  // enum intr_level old_level = intr_disable ();
+  lock_acquire(&child_lock);
+  list_push_back(&thread_current()->children, &cp->elem);
+  lock_release(&child_lock);
+  // intr_set_level(old_level);
+  
   tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, &faux);
   if (tid == TID_ERROR) {
     // free(cp);
-    printf("스레드 생성 실패\n");
+    //printf("스레드 생성 실패\n");
     return TID_ERROR;
   }
 
   /* 자식 프로세스 구조체 */
-  struct child_process *cp = child_process_create(tid);
-  // printf("cp구조체 생성\n");
-  if (cp == NULL) {
-    return -1;
-  }
+  // struct child_process *cp = child_process_create(tid);
+  // // printf("cp구조체 생성\n");
+  // if (cp == NULL) {
+  //   return -1;
+  // }
 
   /* 동기화 처리 - 자식 load 하는 동안 부모는 블락 */
   sema_down(&fork_sema);
@@ -132,6 +137,9 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
     return tid;
   } else {
     /* fork 실패 */
+    // enum intr_level old_level = intr_disable ();
+    list_remove(&cp->elem);
+    // intr_set_level(old_level);
     free(cp);
     return TID_ERROR;
   }
@@ -189,6 +197,9 @@ static void __do_fork(void *aux) {
   struct fork_aux *faux = aux;
   struct thread *parent = faux->parent;
   struct thread *current = thread_current();
+  struct child_process *cp = faux->cp;
+  cp->tid = current->tid;
+  current->self_cp = cp;
 
   /* 1.문맥 복사 */
   memcpy(&current->tf, &faux->if_, sizeof(struct intr_frame));
@@ -197,7 +208,7 @@ static void __do_fork(void *aux) {
   /* 2. 페이지 테이블 복사 */
   current->pml4 = pml4_create();
   if (current->pml4 == NULL) {
-    printf("pml_create 실패\n");
+    //printf("pml_create 실패\n");
     goto error;
   }
   process_activate(current);
@@ -206,7 +217,7 @@ static void __do_fork(void *aux) {
   if (!supplemental_page_table_copy(&current->spt, &parent->spt)) goto error;
 #else
   if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) {
-    printf("duplicate_pte 실패\n");
+    //printf("duplicate_pte 실패\n");
     goto error;
   }
 #endif
@@ -225,13 +236,13 @@ static void __do_fork(void *aux) {
       if (f != NULL) {
         current->fd_table[fd] = f;
       } else {
-        printf("파일복사 실패\n");
+        //printf("파일복사 실패\n");
         goto error;
       }
     }
   }
   // hex_dump((uintptr_t)&current->tf, &current->tf, sizeof(struct intr_frame), true);
-  // printf("[SEMA-UP] 쓰레드 = %s 성공 = %d\n", current->name, cp->load_success);
+  // printf("[SEMA-UP] 쓰레드 = %s\n", current->name);
   faux->fork_success = true;
   sema_up(faux->fork_sema);
   /* 동기화 처리 및 문맥전환 */
@@ -310,13 +321,19 @@ int process_wait(tid_t child_tid UNUSED) {
   if (cp == NULL) {
     return -1;
   }
+  struct thread *ct = find_child_thread(child_tid);
+  if(ct == NULL) {
+    return -1;
+  }
   sema_down(&cp->exit_sema);
 
   int status = cp->exit_status;
+  ct->parent_waited = true;
   // printf("[WAIT] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
   // printf("[WAIT3]child list size = %d\n", list_size(&thread_current()->children));
   list_remove(&cp->elem);
   free(cp);
+  ct->self_cp = NULL;
   // printf("[FREE-WAIT] cp @ %p by parent %d for child %d\n", cp, thread_current()->tid, child_tid); // 추가
   return status;
 }
@@ -347,7 +364,7 @@ void process_exit(void) {
     }
   }
   if (curr->fd_table != NULL) {
-    palloc_free_page(curr->fd_table);
+    free(curr->fd_table);
     curr->fd_table = NULL;
   }
 
