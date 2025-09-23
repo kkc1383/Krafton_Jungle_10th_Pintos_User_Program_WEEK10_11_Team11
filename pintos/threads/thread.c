@@ -334,14 +334,14 @@ tid_t thread_tid(void) { return thread_current()->tid; }
    returns to the caller. */
 void thread_exit(void) {
   ASSERT(!intr_context());
-  intr_disable();
+  
 #ifdef USERPROG
   process_exit();
 #endif
 
   /* Just set our status to dying and schedule another process.
      We will be destroyed during the call to schedule_tail(). */
-  
+  intr_disable();
   list_remove(&thread_current()->all_elem);  // all_list에서 제거
   do_schedule(THREAD_DYING);
   NOT_REACHED();
@@ -593,6 +593,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   list_init(&t->children);
   t->max_fd = START_FD;
   t->parent_waited = false;
+  t->self_cp = NULL;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -725,9 +726,9 @@ static void do_schedule(int status) {
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    if (victim->parent_waited) {
+    // if (victim->parent_waited) {
       palloc_free_page(victim);
-    }
+    // }
   }
   thread_current()->status = status;
   schedule();

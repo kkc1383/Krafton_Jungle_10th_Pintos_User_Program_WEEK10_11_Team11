@@ -137,6 +137,7 @@ struct thread {
   /* 실행중인 ELF파일 */
   struct file *running_file;
   bool parent_waited;
+  int exit_status;  // 종료 코드
 };
 
 /* 자식 프로세스 구조체 */

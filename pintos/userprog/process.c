@@ -91,22 +91,25 @@ static void initd(void *aux) {
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
+  // intr_disable();
   struct thread *parent = thread_current();
   // struct semaphore fork_sema;
   // sema_init(&fork_sema, 0);
 
   /* __do_fork 전달 구조체 */
-  struct fork_aux *faux = calloc(1,sizeof(struct fork_aux));
+  struct fork_aux *faux = calloc(1, sizeof(struct fork_aux));
   if (!faux) {
+    // printf("[PROCESS_FORK] faux 할당 실패 스레드 = %s\n", thread_current()->name);
     return TID_ERROR;
   }
   faux->parent = parent;
-  faux->if_ = *if_;
+  faux->if_ = if_;
   // faux->fork_sema = &fork_sema;
-  //cp->fork_success = false;
+  // cp->fork_success = false;
 
-  struct child_process *cp = calloc(1,sizeof(struct child_process));
+  struct child_process *cp = calloc(1, sizeof(struct child_process));
   if (!cp) {
+    // printf("[PROCESS_FORK] cp 할당 실패 스레드 = %s\n", thread_current()->name);
     free(faux);
     return TID_ERROR;
   }
@@ -117,8 +120,11 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   list_push_back(&thread_current()->children, &cp->elem);
   cp->fork_success = false;
 
+  intr_disable();
   tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, faux);
+  intr_enable();
   if (tid == TID_ERROR) {
+    // printf("[PROCESS_FORK] thread 할당 실패 스레드 = %s\n", thread_current()->name);
     free(faux);
     free(cp);
     // printf("스레드 생성 실패\n");
@@ -195,7 +201,7 @@ static bool duplicate_pte(uint64_t *pte, void *va, void *aux) {
 static void __do_fork(struct fork_aux *aux) {
   /* fork_aux */
   struct fork_aux local_aux = *(struct fork_aux *)aux;
-  free(aux);
+
 
   struct thread *parent = local_aux.parent;
   struct thread *current = thread_current();
@@ -204,13 +210,15 @@ static void __do_fork(struct fork_aux *aux) {
   current->self_cp = cp;
 
   /* 1.문맥 복사 */
-  memcpy(&current->tf, &local_aux.if_, sizeof(struct intr_frame));
+  memcpy(&current->tf, aux->if_, sizeof(struct intr_frame));
   current->tf.R.rax = 0;  //자식 반환값은 0
+
+  free(aux);
 
   /* 2. 페이지 테이블 복사 */
   current->pml4 = pml4_create();
   if (current->pml4 == NULL) {
-    // printf("pml_create 실패\n");
+    // printf("[DO_FORK] pml_create 할당 실패 스레드 = %s\n", thread_current()->name);
     goto error;
   }
   process_activate(current);
@@ -219,7 +227,7 @@ static void __do_fork(struct fork_aux *aux) {
   if (!supplemental_page_table_copy(&current->spt, &parent->spt)) goto error;
 #else
   if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) {
-    // printf("duplicate_pte 실패\n");
+    // printf("[DO_FORK] duplicate_pte 실패 스레드 = %s\n", thread_current()->name);
     goto error;
   }
 #endif
@@ -239,6 +247,7 @@ static void __do_fork(struct fork_aux *aux) {
         current->fd_table[fd] = f;
       } else {
         // printf("파일복사 실패\n");
+        // printf("[DO_FORK] 파일 디스크립터 복사 실패 스레드 = %s\n", thread_current()->name);
         goto error;
       }
     }
@@ -246,8 +255,11 @@ static void __do_fork(struct fork_aux *aux) {
   // hex_dump((uintptr_t)&current->tf, &current->tf, sizeof(struct intr_frame), true);
   // printf("[SEMA-UP] 쓰레드 = %s\n", current->name);
   // faux->fork_success = true;
-  cp->fork_success = true;
-  sema_up(&cp->fork_sema);
+  if (cp) {
+    cp->fork_success = true;
+    sema_up(&cp->fork_sema);
+  }
+  // intr_enable();
   /* 동기화 처리 및 문맥전환 */
   do_iret(&current->tf);
 
@@ -265,7 +277,10 @@ error:
   //   current->pml4 = NULL;
   // }
   // sema_up(faux->fork_sema);
-  sema_up(&cp->fork_sema);
+  if (cp) {
+    sema_up(&cp->fork_sema);
+  }
+  // intr_enable();
   // printf("[SEMA-UP] 쓰레드 = %s 실패 = %d\n", current->name, cp->load_success);
   // palloc_free_page(cp);
   // printf("[do_fork]parent children list size = %d\n", list_size(&parent->children));
@@ -325,19 +340,20 @@ int process_wait(tid_t child_tid UNUSED) {
   if (cp == NULL) {
     return -1;
   }
-  struct thread *ct = find_child_thread(child_tid);
-  if (ct == NULL) {
-    return -1;
-  }
+  // struct thread *ct = find_child_thread(child_tid);
+  // if (ct == NULL) {
+  //   return -1;
+  // }
+  // printf("[WAIT] 세마down 전 스레드 = %s\n", thread_current()->name);
   sema_down(&cp->exit_sema);
 
   int status = cp->exit_status;
-  ct->parent_waited = true;
-  // printf("[WAIT] %s waited %d, got %d\n", thread_current()->name, child_tid, status);
+  // ct->parent_waited = true;
   // printf("[WAIT3]child list size = %d\n", list_size(&thread_current()->children));
   list_remove(&cp->elem);
   free(cp);
-  ct->self_cp = NULL;
+  // ct->self_cp = NULL;
+  // printf("[WAIT] 세마down 후 스레드 = %s\n", thread_current()->name);
   // printf("[FREE-WAIT] cp @ %p by parent %d for child %d\n", cp, thread_current()->tid, child_tid); // 추가
   return status;
 }
@@ -351,8 +367,12 @@ void process_exit(void) {
   struct thread *curr = thread_current();
 
   /* 자식이 종료되었으면 부모 스레드 실행재개 */
-  // printf("[EXIT] %s waited \n", thread_current()->name);
-  sema_up(&curr->self_cp->exit_sema);
+  // printf("[EXIT] 스레드 = %s\n", thread_current()->name);
+  if (curr->self_cp) {
+    curr->self_cp->exit_status = curr->exit_status;
+    sema_up(&curr->self_cp->exit_sema);
+    
+  }
 
   /* 실행중인 ELF 파일에 대한 쓰기권한 복귀 */
   if (curr->running_file != NULL) {
@@ -493,7 +513,7 @@ static bool load(const void *pargs, struct intr_frame *if_) {
   /* Open executable file. */
   file = filesys_open(pa->file_name);
   if (file == NULL) {
-    printf("load: %s: open failed\n", pa->file_name);
+    // printf("load: %s: open failed\n", pa->file_name);
     goto done;
   }
   /* 쓰기방지 및 핸들 저장 */
@@ -504,7 +524,7 @@ static bool load(const void *pargs, struct intr_frame *if_) {
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr || memcmp(ehdr.e_ident, "\177ELF\2\1\1", 7) ||
       ehdr.e_type != 2 || ehdr.e_machine != 0x3E  // amd64
       || ehdr.e_version != 1 || ehdr.e_phentsize != sizeof(struct Phdr) || ehdr.e_phnum > 1024) {
-    printf("load: %s: error loading executable\n", pa->file_name);
+    // printf("load: %s: error loading executable\n", pa->file_name);
     goto done;
   }
 
@@ -771,7 +791,7 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage, uint32_t 
 
     /* Add the page to the process's address space. */
     if (!install_page(upage, kpage, writable)) {
-      printf("fail\n");
+      // printf("fail\n");
       palloc_free_page(kpage);
       return false;
     }
