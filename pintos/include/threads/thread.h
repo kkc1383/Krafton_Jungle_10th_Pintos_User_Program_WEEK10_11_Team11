@@ -144,9 +144,11 @@ struct child_process {
   tid_t tid;          // 자식의 TID
   int exit_status;    // 자식의 종료 코드
   bool load_success;  // exec() 시 로딩 성공 여부
+  bool fork_success;  // fork() 성공 여부 
   /* 동기화를 위한 세마포어 */
   struct semaphore exit_sema;  // 자식의 종료를 부모가 기다릴 때 사용
   // struct semaphore load_sema;  // 자식의 exec() 로딩을 부모가 기다릴 때 사용
+  struct semaphore fork_sema;
   struct list_elem elem;
 };
 

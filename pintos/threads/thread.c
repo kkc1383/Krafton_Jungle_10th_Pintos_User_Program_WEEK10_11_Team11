@@ -239,14 +239,14 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* FD 테이블 페이지 할당 */
   t->fd_table = calloc(FD_MAX, sizeof(struct file *));
   if (t->fd_table == NULL) {
-    list_remove(&t->all_elem);
+    //list_remove(&t->all_elem);
     palloc_free_page(t);
     return TID_ERROR;
   }
 
-  lock_acquire(&all_list_lock);
+  // lock_acquire(&all_list_lock);
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
-  lock_release(&all_list_lock);
+  // lock_release(&all_list_lock);
   /* Add to run queue. */
   thread_unblock(t);
 
@@ -334,13 +334,14 @@ tid_t thread_tid(void) { return thread_current()->tid; }
    returns to the caller. */
 void thread_exit(void) {
   ASSERT(!intr_context());
+  intr_disable();
 #ifdef USERPROG
   process_exit();
 #endif
 
   /* Just set our status to dying and schedule another process.
      We will be destroyed during the call to schedule_tail(). */
-  intr_disable();
+  
   list_remove(&thread_current()->all_elem);  // all_list에서 제거
   do_schedule(THREAD_DYING);
   NOT_REACHED();
