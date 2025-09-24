@@ -5,8 +5,10 @@
 #include <list.h>
 #include <stdint.h>
 
+#include "filesys/file.h"
 #include "threads/fixed-point.h"
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -29,6 +31,7 @@ typedef int tid_t;
 #define PRI_MIN 0      /* Lowest priority. */
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
+#define MAX_FILES 32   /* max number of file descriptors in fd_table */
 
 /* A kernel thread or user process.
  *
@@ -109,6 +112,17 @@ struct thread {
   int nice;           /* CPU를 양보하는 척도 (-20~20) */
   fixed_t recent_cpu; /* 최근 CPU 사용량 (fixed-point)*/
 
+  /* process wait, exit 용 */
+  struct list child_list;     // child_info 의 리스트
+  struct lock children_lock;  // children list 순회할때 race condition 막기 위해
+  tid_t parent_tid;           // 내 부모의 tid
+
+  /* filesys 용 */
+  // struct file_info **fd_table; /* 파일 디스크립터 테이블, 0,1은 이미 예약 */
+  struct file **fd_table;
+  size_t fd_size; /* fd_table 전체 크기 */
+  size_t fd_max;  /* 현재 fd 번호 최대, open 하나당 하나씩 늘려갈 거임*/
+
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
@@ -121,6 +135,16 @@ struct thread {
   /* Owned by thread.c. */
   struct intr_frame tf; /* Information for switching */
   unsigned magic;       /* Detects stack overflow. */
+};
+
+struct child_info {
+  /* process wait, exit 용 */
+  tid_t child_tid;  //자식의 tid
+  int exit_status;  //자식의 exit status
+  bool has_exited;  //종료 여부
+  bool fork_success;
+  struct semaphore wait_sema;   //이 자식만을 위한 semaphore
+  struct list_elem child_elem;  // child_list의 노드
 };
 
 /* If false (default), use round-robin scheduler.
@@ -160,6 +184,7 @@ void do_iret(struct intr_frame *tf);
 
 struct list *get_ready_list(void);
 struct list *get_sleep_list(void);
+struct list *get_all_list(void);
 
 void thread_update_all_priority(void);
 void mlfqs_update_priority(struct thread *t);
@@ -167,4 +192,9 @@ bool thread_priority_less(const struct list_elem *, const struct list_elem *, vo
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
 
+struct thread *thread_get_by_tid(tid_t tid);
+// struct file_info *get_std_in();
+// struct file_info *get_std_out();
+struct file *get_std_in();
+struct file *get_std_out();
 #endif /* threads/thread.h */

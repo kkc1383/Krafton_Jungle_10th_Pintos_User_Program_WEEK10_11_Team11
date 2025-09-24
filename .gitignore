@@ -30,3 +30,5 @@ core
 .DS_Store
 
 .test_status
+
+Make.vars
