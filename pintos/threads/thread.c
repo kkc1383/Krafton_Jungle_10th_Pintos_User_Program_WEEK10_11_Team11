@@ -241,12 +241,12 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   /* userprog */
   /* FD 테이블 페이지 할당 */
-  t->fd_table = calloc(FD_MAX, sizeof(struct file *));
-  if (t->fd_table == NULL) {
-    // list_remove(&t->all_elem);
-    palloc_free_page(t);
-    return TID_ERROR;
-  }
+  // t->fd_table = calloc(FD_MAX, sizeof(struct file *));
+  // if (t->fd_table == NULL) {
+  //   // list_remove(&t->all_elem);
+  //   palloc_free_page(t);
+  //   return TID_ERROR;
+  // }
 
   lock_acquire(&all_list_lock);
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
@@ -606,7 +606,6 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   /* userprog */
   list_init(&t->children);
   t->max_fd = START_FD;
-  t->parent_waited = false;
   t->self_cp = NULL;
 }
 
@@ -739,7 +738,6 @@ static void do_schedule(int status) {
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
-    // struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
     struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, dest_elem);
     ASSERT(victim != thread_current());
     ASSERT(victim->status == THREAD_DYING);

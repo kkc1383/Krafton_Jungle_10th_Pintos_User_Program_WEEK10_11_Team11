@@ -236,7 +236,10 @@ int sys_open(const char *path) {
   struct thread *t = thread_current();
   int fd = -1;
   for (int i = 2; i < FD_MAX; i++) {
-    if (t->fd_table[i] == NULL) { fd = i; break; }
+    if (t->fd_table[i] == NULL) {
+      fd = i;
+      break;
+    }
   }
   if (fd == -1) {
     lock_acquire(&filesys_lock);
@@ -245,6 +248,10 @@ int sys_open(const char *path) {
     return -1;
   }
   t->fd_table[fd] = f;
+  /* max fd 갱신 */
+  if (fd > t->max_fd) {
+    t->max_fd = fd;
+  }
   return fd;
 }
 

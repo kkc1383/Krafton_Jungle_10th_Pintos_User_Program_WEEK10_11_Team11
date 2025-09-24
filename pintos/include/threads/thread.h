@@ -32,7 +32,7 @@ typedef int tid_t;
 #define PRI_MAX 63     /* Highest priority. */
 
 /* 파일 디스크립터 테이블 관련 */
-#define FD_MAX 512
+#define FD_MAX 128
 #define START_FD 2
 
 
@@ -92,7 +92,7 @@ typedef int tid_t;
  * semaphore wait list (synch.c).  It can be used these two ways
  * only because they are mutually exclusive: only a thread in the
  * ready state is on the run queue, whereas only a thread in the
- * blocked state is on a semaphore wait list. */
+* blocked state is on a semaphore wait list. */
 struct thread {
   /* Owned by thread.c. */
   tid_t tid;                 /* Thread identifier. */
@@ -133,11 +133,10 @@ struct thread {
   struct child_process *self_cp;  // 자신의 cp
   struct list children;           // 자식 리스트 관리(cp)
   /* 파일디스크립터 테이블 */
-  struct file **fd_table;
+  struct file *fd_table[FD_MAX];
   int max_fd;
   /* 실행중인 ELF파일 */
   struct file *running_file;
-  bool parent_waited;
   int exit_status;  // 종료 코드
 };
 
@@ -149,11 +148,9 @@ struct child_process {
   bool fork_success;  // fork() 성공 여부 
   /* 동기화를 위한 세마포어 */
   struct semaphore exit_sema;  // 자식의 종료를 부모가 기다릴 때 사용
-  // struct semaphore load_sema;  // 자식의 exec() 로딩을 부모가 기다릴 때 사용
   struct semaphore fork_sema;
   struct list_elem elem;
 
-  // struct lock reap_lock;
 };
 
 /* If false (default), use round-robin scheduler.

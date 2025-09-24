@@ -17,8 +17,6 @@ struct passing_arguments {
 struct fork_aux {
   struct intr_frame *if_;
   struct thread *parent;
-  // struct semaphore *fork_sema;
-  // bool fork_success;
   struct child_process *cp;
 };
 
