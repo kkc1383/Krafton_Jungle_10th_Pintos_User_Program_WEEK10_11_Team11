@@ -137,9 +137,9 @@ void validate_ptr(const void *uaddr) {
   if (uaddr == NULL || !is_user_vaddr(uaddr)) {
     sys_exit(-1);
   }
-  // if (pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
-  //   sys_exit(-1);
-  // }
+  if (pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
+    sys_exit(-1);
+  }
 }
 /* 문자열 검사 */
 void validate_str(const char *str) {

@@ -142,8 +142,8 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED) {
   sema_down(&cp->fork_sema);
   int res = tid;
   if (!cp->load_success) {
-    list_remove(&cp->elem);
-    free(cp);
+    // list_remove(&cp->elem);
+    // free(cp);
     //  printf("[FREE-FORK-FAIL] cp @ %p by parent %d\n", cp, thread_current()->tid); // 추가
     res = -1;
   }
@@ -209,7 +209,7 @@ static void __do_fork(void *aux) {
   */
   /* fork_aux 복사 후 바로 해제 */
   struct fork_aux local = *(struct fork_aux *)aux;
-  free(aux);
+
 
   struct thread *parent = local.parent;
   struct thread *current = thread_current();
@@ -275,6 +275,7 @@ static void __do_fork(void *aux) {
     // printf("[SEMA-UP] 쓰레드 = %s 성공 = %d\n", current->name, cp->load_success);
     sema_up(&cp->fork_sema);
   }
+  free(aux);
   do_iret(&current->tf);
 
 error:
@@ -296,10 +297,11 @@ error:
     sema_up(&cp->fork_sema);
     // palloc_free_page(cp);
   }
+  free(aux);
   // printf("[do_fork]parent children list size = %d\n", list_size(&parent->children));
   // list_remove(&cp->elem);
-  // sys_exit(-1);
-  thread_exit();
+  sys_exit(-1);
+  //thread_exit();
 }
 
 /* Switch the current execution context to the f_name.
@@ -359,10 +361,10 @@ int process_wait(tid_t child_tid UNUSED) {
     return -1;
   }
   cp->waited = true;
-  struct thread *ct = find_child_thread(child_tid);
-  if (ct == NULL) {
-    return -1;
-  }
+  // struct thread *ct = find_child_thread(child_tid);
+  // if (ct == NULL) {
+  //   return -1;
+  // }
 
   if (!cp->exited) {
     sema_down(&cp->wait_sema);

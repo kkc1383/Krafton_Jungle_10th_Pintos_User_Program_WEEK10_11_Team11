@@ -212,7 +212,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* Initialize thread. */
   init_thread(t, name, priority);
   tid = t->tid = allocate_tid();
-  list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
+
 
   if (thread_mlfqs) {  // mlfqs일 경우
     // 부모 쓰레드의 nice, recent_cpu 물려받기
@@ -234,6 +234,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   t->tf.cs = SEL_KCSEG;
   t->tf.eflags = FLAG_IF;
 
+  list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
   /* Add to run queue. */
   thread_unblock(t);
 
