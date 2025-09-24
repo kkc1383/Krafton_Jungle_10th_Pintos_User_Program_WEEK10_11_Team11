@@ -138,9 +138,9 @@ void validate_ptr(const void *uaddr) {
   if (uaddr == NULL || !is_user_vaddr(uaddr)) {
     sys_exit(-1);
   }
-  // if (pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
-  //   sys_exit(-1);
-  // }
+  if (pml4_get_page(thread_current()->pml4, uaddr) == NULL) {
+    sys_exit(-1);
+  }
 }
 /* 문자열 검사 */
 void validate_str(const char *str) {
@@ -197,11 +197,11 @@ int sys_exec(const char *cmd_line) {
   int res = process_exec(pargs);
   if (res < 0) {
     palloc_free_page(kern_cmd_line);
-    // palloc_free_page(pargs);
+    palloc_free_page(pargs);
     sys_exit(-1);
   }
   palloc_free_page(kern_cmd_line);
-  // palloc_free_page(pargs);
+  palloc_free_page(pargs);
   NOT_REACHED();  // 성공하면 현재 프로세스 주소 공간이 교체되므로 여기 안 옴
 }
 int sys_wait(int pid) {

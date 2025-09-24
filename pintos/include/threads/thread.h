@@ -105,6 +105,7 @@ struct thread {
   int64_t wake_tick;           /* 쓰레드를 깨울 시간 */
   struct list_elem sleep_elem; /* sleep_list에서의 연결리스트 노드 */
   struct list_elem all_elem;   /* all_list에서의 연결리스트 노드 */
+  struct list_elem dest_elem; /* 파괴 전용*/
 
   int original_priority;         /* 원래 우선순위(기부 이전) */
   struct list acquired_locks;    /* 현재 보유(점유) 중인 락들 */
@@ -151,6 +152,8 @@ struct child_process {
   // struct semaphore load_sema;  // 자식의 exec() 로딩을 부모가 기다릴 때 사용
   struct semaphore fork_sema;
   struct list_elem elem;
+
+  // struct lock reap_lock;
 };
 
 /* If false (default), use round-robin scheduler.

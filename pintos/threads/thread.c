@@ -47,9 +47,11 @@ static struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
+static struct lock all_list_lock;
 
 /* Thread destruction requests */
 static struct list destruction_req;
+static struct thread *last_thread_freed;
 
 /* Statistics. */
 static long long idle_ticks;   /* # of timer ticks spent idle. */
@@ -67,7 +69,6 @@ static unsigned thread_ticks; /* # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
-static struct lock all_list_lock;
 
 static void kernel_thread(thread_func *, void *aux);
 
@@ -202,6 +203,7 @@ void thread_print_stats(void) {
    Priority scheduling is the goal of Problem 1-3. */
 tid_t thread_create(const char *name, int priority, thread_func *function, void *aux) {
   struct thread *t;
+  // printf("[THREAD_CREATE START]thread_current()\n");
   struct thread *parent = thread_current();
   tid_t tid;
 
@@ -210,6 +212,8 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* Allocate thread. */
   t = palloc_get_page(PAL_ZERO);
   if (t == NULL) return TID_ERROR;
+
+  // printf("[CREATE] Thread '%s' assigned to page %p\n", name, t);
 
   /* Initialize thread. */
   init_thread(t, name, priority);
@@ -239,16 +243,18 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   /* FD 테이블 페이지 할당 */
   t->fd_table = calloc(FD_MAX, sizeof(struct file *));
   if (t->fd_table == NULL) {
-    //list_remove(&t->all_elem);
+    // list_remove(&t->all_elem);
     palloc_free_page(t);
     return TID_ERROR;
   }
 
-  // lock_acquire(&all_list_lock);
+  lock_acquire(&all_list_lock);
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
-  // lock_release(&all_list_lock);
+  lock_release(&all_list_lock);
+  // t->exit_status = -1;
   /* Add to run queue. */
   thread_unblock(t);
+  //  printf("[THREAD_CREATE END]thread_current()\n");
 
   return tid;
 }
@@ -283,6 +289,8 @@ void thread_unblock(struct thread *t) {
                                         // 반환(기존 상태 저장해놓고, disable 만듬)
   ASSERT(t->status == THREAD_BLOCKED);  // 해당 쓰레드의 status 필드가 THREAD_BLOCKED인지 확인
 
+  // printf("[READY] Thread '%s' (page %p) is now ready\n", t->name, t);
+
   if (thread_mlfqs) {
     list_push_back(&mlfqs_ready_queues[t->priority - PRI_MIN], &t->elem);  // 우선순위에 맞는 큐에 집어넣음
     if (t != idle_thread)  // idle thread는 카운트 하면 안되므로
@@ -315,6 +323,7 @@ const char *thread_name(void) { return thread_current()->name; }
    See the big comment at the top of thread.h for details. */
 struct thread *thread_current(void) {
   struct thread *t = running_thread();
+  if (t == last_thread_freed) PANIC("running thread page was freed: %p", t);
 
   /* Make sure T is really a thread.
      If either of these assertions fire, then your thread may
@@ -334,7 +343,9 @@ tid_t thread_tid(void) { return thread_current()->tid; }
    returns to the caller. */
 void thread_exit(void) {
   ASSERT(!intr_context());
-  
+
+  // printf("[EXIT] Thread '%s' (page %p) is exiting\n", thread_current()->name, thread_current());
+
 #ifdef USERPROG
   process_exit();
 #endif
@@ -342,7 +353,9 @@ void thread_exit(void) {
   /* Just set our status to dying and schedule another process.
      We will be destroyed during the call to schedule_tail(). */
   intr_disable();
+  lock_acquire(&all_list_lock);
   list_remove(&thread_current()->all_elem);  // all_list에서 제거
+  lock_release(&all_list_lock);
   do_schedule(THREAD_DYING);
   NOT_REACHED();
 }
@@ -572,6 +585,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   ASSERT(name != NULL);
 
   memset(t, 0, sizeof *t);
+  if (last_thread_freed == t) last_thread_freed = NULL;
   t->status = THREAD_BLOCKED;
   strlcpy(t->name, name, sizeof t->name);
   t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *);
@@ -725,10 +739,12 @@ static void do_schedule(int status) {
   ASSERT(intr_get_level() == INTR_OFF);
   ASSERT(thread_current()->status == THREAD_RUNNING);
   while (!list_empty(&destruction_req)) {
-    struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
-    // if (victim->parent_waited) {
-      palloc_free_page(victim);
-    // }
+    // struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, elem);
+    struct thread *victim = list_entry(list_pop_front(&destruction_req), struct thread, dest_elem);
+    ASSERT(victim != thread_current());
+    ASSERT(victim->status == THREAD_DYING);
+    last_thread_freed = victim;
+    palloc_free_page(victim);
   }
   thread_current()->status = status;
   schedule();
@@ -767,9 +783,10 @@ static void schedule(void) {
     if (curr && curr->status == THREAD_DYING && curr != initial_thread) {  // curr이 DYING 하는 쓰레드라면 즉시
                                                                            // 삭제하는게 아니라
       ASSERT(curr != next);
-      list_push_back(&destruction_req,
-                     &curr->elem);  // destruction_req에 넣어놨다가 다른
-                                    // 쓰레드에 의해서 청소 되게끔
+      // list_push_back(&destruction_req,
+      //                &curr->elem);  // destruction_req에 넣어놨다가 다른
+      //                               // 쓰레드에 의해서 청소 되게끔
+      list_push_back(&destruction_req, &curr->dest_elem);
     }
 
     /* Before switching the thread, we first save the information
@@ -799,6 +816,22 @@ struct list *get_sleep_list(void) {
 }
 struct list *get_all_list(void) {
   return &all_list;
+}
+
+struct thread *find_child_thread(tid_t child_tid) {
+  struct list_elem *e;
+  struct thread *found = NULL;
+
+  lock_acquire(&all_list_lock);
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, all_elem);
+    if (t->tid == child_tid) {
+      found = t;
+      break;
+    }
+  }
+  lock_release(&all_list_lock);
+  return found;
 }
 
 bool thread_priority_less(const struct list_elem *a, const struct list_elem *b, void *aux) {
