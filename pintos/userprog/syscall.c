@@ -170,7 +170,6 @@ struct file *fd_to_file(int fd) {
 void sys_halt() { power_off(); }
 void sys_exit(int status) {
   struct thread *t = thread_current();
-  // t->self_cp->exit_status = status;
   t->exit_status = status;
   printf("%s: exit(%d)\n", t->name, status);
   thread_exit();

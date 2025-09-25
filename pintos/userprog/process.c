@@ -269,10 +269,10 @@ int process_wait(tid_t child_tid UNUSED) {
   if (cp == NULL) {
     return -1;
   }
-  sema_down(&cp->exit_sema);
+  sema_down(&cp->wait_sema);
   int status = cp->exit_status;
   list_remove(&cp->elem);
-  free(cp);
+  sema_up(&cp->exit_sema);
   return status;
 }
 
@@ -291,10 +291,10 @@ void process_exit(void) {
       curr->fd_table[fd] = NULL;
     }
   }
-  // if (curr->fd_table != NULL) {
-  //   free(curr->fd_table);
-  //   curr->fd_table = NULL;
-  // }
+  if (curr->fd_table != NULL) {
+    free(curr->fd_table);
+    curr->fd_table = NULL;
+  }
   /* 페이지 테이블 비우기 */
   if (curr->pml4 != NULL) {
     process_cleanup();
@@ -302,7 +302,10 @@ void process_exit(void) {
   /* 자식이 종료되었으면 부모 스레드 실행재개 */
   if (curr->self_cp) {
     curr->self_cp->exit_status = curr->exit_status;
-    sema_up(&curr->self_cp->exit_sema);
+    sema_up(&curr->self_cp->wait_sema);
+    sema_down(&curr->self_cp->exit_sema);
+    free(curr->self_cp);
+    curr->self_cp = NULL;
   }
 }
 
@@ -574,8 +577,9 @@ struct child_process *child_process_create(tid_t tid) {
   cp->tid = tid;
   cp->exit_status = -1;
   cp->fork_success = false;
-  sema_init(&cp->exit_sema, 0);
+  sema_init(&cp->wait_sema, 0);
   sema_init(&cp->fork_sema, 0);
+  sema_init(&cp->exit_sema, 0);
   struct thread *ct = find_child_thread(tid);
   if (ct == NULL) {
     free(cp);

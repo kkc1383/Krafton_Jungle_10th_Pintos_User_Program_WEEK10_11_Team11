@@ -241,12 +241,12 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
   /* userprog */
   /* FD 테이블 페이지 할당 */
-  // t->fd_table = calloc(FD_MAX, sizeof(struct file *));
-  // if (t->fd_table == NULL) {
-  //   // list_remove(&t->all_elem);
-  //   palloc_free_page(t);
-  //   return TID_ERROR;
-  // }
+  t->fd_table = calloc(FD_MAX, sizeof(struct file *));
+  if (t->fd_table == NULL) {
+    // list_remove(&t->all_elem);
+    palloc_free_page(t);
+    return TID_ERROR;
+  }
 
   lock_acquire(&all_list_lock);
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기

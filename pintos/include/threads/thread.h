@@ -32,7 +32,7 @@ typedef int tid_t;
 #define PRI_MAX 63     /* Highest priority. */
 
 /* 파일 디스크립터 테이블 관련 */
-#define FD_MAX 128
+#define FD_MAX 512
 #define START_FD 2
 
 
@@ -133,7 +133,7 @@ struct thread {
   struct child_process *self_cp;  // 자신의 cp
   struct list children;           // 자식 리스트 관리(cp)
   /* 파일디스크립터 테이블 */
-  struct file *fd_table[FD_MAX];
+  struct file **fd_table;
   int max_fd;
   /* 실행중인 ELF파일 */
   struct file *running_file;
@@ -147,6 +147,7 @@ struct child_process {
   bool load_success;  // exec() 시 로딩 성공 여부
   bool fork_success;  // fork() 성공 여부 
   /* 동기화를 위한 세마포어 */
+  struct semaphore wait_sema;  // 자식의 종료를 부모가 기다릴 때 사용
   struct semaphore exit_sema;  // 자식의 종료를 부모가 기다릴 때 사용
   struct semaphore fork_sema;
   struct list_elem elem;
