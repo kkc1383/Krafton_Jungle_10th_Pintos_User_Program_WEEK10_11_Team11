@@ -79,9 +79,7 @@ static void kill(struct intr_frame *f) {
       /* User's code segment, so it's a user exception, as we
          expected.  Kill the user process.  */
       system_exit(-1);
-      printf("why you here?\n");
-      printf("%s: dying due to interrupt %#04llx (%s).\n", thread_name(), f->vec_no,
-             intr_name(f->vec_no));
+      printf("%s: dying due to interrupt %#04llx (%s).\n", thread_name(), f->vec_no, intr_name(f->vec_no));
       intr_dump_frame(f);
 
     case SEL_KCSEG:
@@ -95,9 +93,8 @@ static void kill(struct intr_frame *f) {
     default:
       /* Some other code segment?  Shouldn't happen.  Panic the
          kernel. */
-      printf("Interrupt %#04llx (%s) in unknown segment %04x\n", f->vec_no, intr_name(f->vec_no),
-             f->cs);
-      system_exit(-1);
+      printf("Interrupt %#04llx (%s) in unknown segment %04x\n", f->vec_no, intr_name(f->vec_no), f->cs);
+      thread_exit();
   }
 }
 
@@ -144,7 +141,6 @@ static void page_fault(struct intr_frame *f) {
 
   /* If the fault is true fault, show info and exit. */
   printf("Page fault at %p: %s error %s page in %s context.\n", fault_addr,
-         not_present ? "not present" : "rights violation", write ? "writing" : "reading",
-         user ? "user" : "kernel");
+         not_present ? "not present" : "rights violation", write ? "writing" : "reading", user ? "user" : "kernel");
   kill(f);
 }

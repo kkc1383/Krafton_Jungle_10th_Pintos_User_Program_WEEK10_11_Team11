@@ -14,6 +14,7 @@ struct file *file_open(struct inode *inode) {
     file->inode = inode;
     file->pos = 0;
     file->deny_write = false;
+    file->dup_count = 1;  // 기본 값 1 초기화
     return file;
   } else {
     inode_close(inode);
@@ -137,21 +138,4 @@ void file_seek(struct file *file, off_t new_pos) {
 off_t file_tell(struct file *file) {
   ASSERT(file != NULL);
   return file->pos;
-}
-
-// struct file_info *init_std() {
-//   /* 리턴할 file_info 만들기*/
-//   struct file_info *new_file_info = (struct file_info *)calloc(1, sizeof(struct file_info));
-//   if (!new_file_info) return NULL;
-//   /* file_info 필드 채우기 */
-//   new_file_info->dup_count = 0;
-//   new_file_info->duplicated_file = NULL;
-//   new_file_info->file = NULL;
-//   new_file_info->is_duplicated = false;
-
-//   return new_file_info;
-// }
-struct file *init_std() {
-  struct file *new_file = (struct file *)malloc(sizeof(struct file));
-  return new_file;
 }

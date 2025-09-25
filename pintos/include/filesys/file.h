@@ -1,30 +1,19 @@
 #ifndef FILESYS_FILE_H
 #define FILESYS_FILE_H
 
-#include <list.h>
+#include <stdbool.h>
 
 #include "filesys/off_t.h"
-#include "lib/stdbool.h"
 
 struct inode;
+
 /* An open file. */
 struct file {
   struct inode *inode; /* File's inode. */
   off_t pos;           /* Current position. */
   bool deny_write;     /* Has file_deny_write() been called? */
-  int dup_count;
+  int dup_count;       /* dup2 호출 되면 증가 (기본 1)*/
 };
-// struct file_info {
-//   struct file_info *duplicated_file; /* fork 시에 첫 복제 file_info 올려놓는 곳*/
-//   struct file *file;                 /* fd가 가리키는 file */
-//   struct list dup_list;              /* dup 된 fd들의 list */
-//   int dup_count;      /* list_sie(dup_list) fork 하면서 차감하면서 마지막 dup 판단 */
-//   bool is_duplicated; /* 첫 복제임을 알기 위해서 */
-// };
-// struct dup_elem {
-//   int fd;
-//   struct list_elem elem; /* dup_list 용*/
-// };
 
 /* Opening and closing files. */
 struct file *file_open(struct inode *);
@@ -48,6 +37,4 @@ void file_seek(struct file *, off_t);
 off_t file_tell(struct file *);
 off_t file_length(struct file *);
 
-// struct file_info *init_std(void);
-struct file *init_std(void);
 #endif /* filesys/file.h */
