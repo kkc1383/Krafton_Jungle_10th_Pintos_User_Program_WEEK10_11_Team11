@@ -289,9 +289,222 @@ make tests/userprog/fork-once.result
 make check
 ```
 
+## 메모리 누수 방지 (multi-oom 테스트 통과)
+
+**핵심 목표**: 메모리 할당 실패 시에도 이미 할당된 자원을 누수 없이 정리
+
+### 주요 구현 사항
+
+#### 1. 프로세스 생성 실패 시 정리
+**위치:** [process.c:54-73](pintos/userprog/process.c#L54-L73)
+
+```c
+fn_copy = palloc_get_page(0);
+if (fn_copy == NULL) return TID_ERROR;
+
+fn = palloc_get_page(0);
+if (fn == NULL) {
+    palloc_free_page(fn_copy);  // 첫 번째 할당 해제
+    return TID_ERROR;
+}
+
+tid = thread_create(fn, PRI_DEFAULT, initd, fn_copy);
+palloc_free_page(fn);  // 항상 해제
+if (tid == TID_ERROR)
+    palloc_free_page(fn_copy);  // thread_create 실패 시 해제
+```
+
+#### 2. Fork 중 메모리 할당 실패 처리
+**위치:** [process.c:187-256](pintos/userprog/process.c#L187-L256)
+
+```c
+if (current->pml4 == NULL) goto error;
+if (!pml4_for_each(parent->pml4, duplicate_pte, parent)) goto error;
+
+for (int i = 0; i <= parent->fd_max; i++) {
+    struct file *new_file = file_duplicate(parent->fd_table[i]);
+    if (!new_file) goto error;  // 실패 시 error 레이블로 이동
+    current->fd_table[i] = new_file;
+}
+
+error:
+    sema_up(&aux->fork_sema);  // 부모 프로세스 언블록
+    system_exit(-1);            // process_exit()에서 모든 자원 정리
+```
+
+**신경 쓴 부분:**
+- 모든 할당 실패를 단일 `error:` 레이블로 수렴
+- `system_exit(-1)`이 `process_exit()`를 호출하여 fd_table, pml4 등 모든 자원 자동 정리
+
+#### 3. 인자 파싱 후 반드시 정리
+**위치:** [process.c:262-296](pintos/userprog/process.c#L262-L296)
+
+```c
+char **argv = palloc_get_page(0);
+for (token = strtok_r(f_name, " ", &save_ptr); token != NULL; ...) {
+    argv[i] = malloc((strlen(token) + 1) * sizeof(char));
+    memcpy(argv[i++], token, strlen(token) + 1);
+}
+
+success = load(argv, &_if);
+
+// load 성공 여부와 무관하게 항상 정리
+for (int j = 0; j < i; j++) {
+    free(argv[j]);  // 각 문자열 해제
+}
+palloc_free_page(argv);  // 페이지 해제
+```
+
+**신경 쓴 부분:**
+- early return 없이 반드시 정리 코드 실행
+- `load()` 성공/실패와 무관하게 모든 인자 메모리 해제
+
+#### 4. 페이지 할당 실패 시 즉시 해제
+**위치:** [process.c:656-670](pintos/userprog/process.c#L656-L670)
+
+```c
+uint8_t *kpage = palloc_get_page(PAL_USER);
+if (kpage == NULL) return false;
+
+if (file_read(file, kpage, page_read_bytes) != (int)page_read_bytes) {
+    palloc_free_page(kpage);  // 읽기 실패 시 즉시 해제
+    return false;
+}
+
+if (!install_page(upage, kpage, writable)) {
+    palloc_free_page(kpage);  // 설치 실패 시 즉시 해제
+    return false;
+}
+```
+
+#### 5. FD 테이블 확장 중 실패 처리
+**위치:** [syscall.c:341-354](pintos/userprog/syscall.c#L341-L354)
+
+```c
+struct file **new_table = calloc(curr->fd_size + expend_size, sizeof(struct file *));
+if (new_table == NULL) return -1;  // 할당 실패 시 기존 테이블 유지
+
+memcpy(new_table, curr->fd_table, curr->fd_size * sizeof(struct file *));
+free(curr->fd_table);  // 복사 후 기존 테이블 해제
+curr->fd_table = new_table;
+```
+
+**신경 쓴 부분:**
+- 새 테이블 할당 실패 시 기존 테이블 유지 (누수 없음)
+- 성공 시에만 기존 테이블 해제
+
+#### 6. 파일 오픈 후 FD 할당 실패 처리
+**위치:** [syscall.c:188-193](pintos/userprog/syscall.c#L188-L193)
+
+```c
+struct file *open_file = filesys_open(file);
+if (!open_file) return -1;
+
+if (new_fd == -1) {  // fd_table 확장 필요
+    if (expend_fd_table(curr, 1) < 0) {
+        file_close(open_file);  // 확장 실패 시 열린 파일 닫기
+        return -1;
+    }
+}
+```
+
+#### 7. 프로세스 종료 시 전체 자원 정리
+**위치:** [process.c:343-365](pintos/userprog/process.c#L343-L365)
+
+```c
+void process_exit(void) {
+    process_cleanup();  // pml4, supplemental page table 정리
+
+    // 모든 열린 파일 디스크립터 닫기
+    for (int i = 0; i <= curr->fd_max; i++) {
+        if (!curr->fd_table[i]) continue;
+        if (curr->fd_table[i] != get_std_in() &&
+            curr->fd_table[i] != get_std_out()) {
+            system_close(i);  // dup_count 처리 포함
+        }
+    }
+    free(curr->fd_table);  // fd_table 해제
+
+    // main 스레드만 stdin/stdout 해제
+    if (!strcmp("main", curr->name)) {
+        free(get_std_in());
+        free(get_std_out());
+    }
+}
+```
+
+**신경 쓴 부분:**
+- `system_close()`를 통해 dup2된 파일의 참조 카운트 정확히 관리
+- stdin/stdout은 main 스레드에서만 해제하여 이중 해제 방지
+
+#### 8. dup2 참조 카운트 관리
+**위치:** [syscall.c:286-302](pintos/userprog/syscall.c#L286-L302)
+
+```c
+void system_close(int fd) {
+    struct file *close_file = curr->fd_table[fd];
+    if (!close_file) return;
+
+    if (close_file != get_std_in() && close_file != get_std_out()) {
+        if (close_file->dup_count >= 2) {
+            close_file->dup_count--;  // 참조 카운트만 감소
+        } else {
+            file_close(close_file);   // 마지막 참조 시 실제 닫기
+        }
+    }
+    curr->fd_table[fd] = NULL;
+}
+```
+
+**신경 쓴 부분:**
+- dup2로 복제된 파일 디스크립터는 참조 카운트(`dup_count`)로 관리
+- 모든 참조가 닫힐 때만 실제 파일 닫아 premature close 방지
+
+#### 9. wait 완료 후 child_info 정리
+**위치:** [process.c:335-338](pintos/userprog/process.c#L335-L338)
+
+```c
+lock_acquire(&curr->children_lock);
+list_remove(&target_child->child_elem);  // 자식 리스트에서 제거
+lock_release(&curr->children_lock);
+
+free(target_child);  // child_info 구조체 해제
+```
+
+#### 10. 스레드 종료 시 all_list 정리
+**위치:** [thread.c:380-395](pintos/threads/thread.c#L380-L395)
+
+```c
+void thread_exit(void) {
+#ifdef USERPROG
+    process_exit();  // 프로세스 자원 모두 정리
+#endif
+
+    intr_disable();
+    lock_acquire(&all_list_lock);
+    list_remove(&thread_current()->all_elem);  // all_list에서 제거
+    lock_release(&all_list_lock);
+
+    do_schedule(THREAD_DYING);  // destruction_req에 추가하여 지연 해제
+}
+```
+
+### 메모리 누수 방지 전략 요약
+
+1. **즉시 정리 패턴**: 할당 실패 시 이미 할당된 자원을 즉시 해제
+2. **단일 에러 경로**: `goto error` 레이블로 모든 실패 경로를 수렴하여 일관된 정리
+3. **참조 카운팅**: dup2로 공유된 파일은 `dup_count`로 관리하여 올바른 시점에 해제
+4. **프로세스 종료 집약**: `process_exit()`에서 모든 자원을 체계적으로 정리
+5. **지연 해제**: 스레드 페이지는 `destruction_req` 큐를 통해 안전한 시점에 해제
+6. **조건부 정리**: stdin/stdout은 main 스레드에서만 해제하여 이중 해제 방지
+
+이러한 메커니즘을 통해 multi-oom 테스트에서 반복적인 메모리 부족 상황에도 누수 없이 안정적으로 동작합니다.
+
+---
+
 ## 구현 결과
 
-모든 하위 과제를 성공적으로 구현하여 Pintos에서 사용자 프로그램이 안전하고 효율적으로 실행될 수 있는 환경을 구축했습니다. 특히 메모리 보호, 동기화, 자원 관리 측면에서 운영체제의 핵심 원리를 실제로 구현하는 경험을 얻었습니다.
+모든 하위 과제를 성공적으로 구현하여 Pintos에서 사용자 프로그램이 안전하고 효율적으로 실행될 수 있는 환경을 구축했습니다. 특히 메모리 보호, 동기화, 자원 관리, 메모리 누수 방지 측면에서 운영체제의 핵심 원리를 실제로 구현하는 경험을 얻었습니다.
 
 ## 참고 자료
 
