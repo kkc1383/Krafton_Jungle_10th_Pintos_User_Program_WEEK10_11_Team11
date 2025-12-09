@@ -2,7 +2,7 @@
 
 본 프로젝트는 KAIST CS330 운영체제 과목의 Pintos Project 2로, 사용자 프로그램 실행을 위한 핵심 기능들을 구현한 결과물입니다.
 
-공식 문서: [https://casys-kaist.github.io/pintos-kaist/project1/introduction.html](https://casys-kaist.github.io/pintos-kaist/project1/introduction.html)
+공식 문서: [https://casys-kaist.github.io/pintos-kaist/project2/introduction.html](https://casys-kaist.github.io/pintos-kaist/project2/introduction.html)
 
 ## 📎 관련 프로젝트
 본 프로젝트는 KAIST Pintos 시리즈 중 **Project 2 (User Program)** 에 해당하며,  
@@ -522,4 +522,5 @@ void thread_exit(void) {
 
 - [KAIST Pintos 공식 문서](https://casys-kaist.github.io/pintos-kaist/)
 - [Project 2: User Programs](https://casys-kaist.github.io/pintos-kaist/project1/introduction.html)
+
 
