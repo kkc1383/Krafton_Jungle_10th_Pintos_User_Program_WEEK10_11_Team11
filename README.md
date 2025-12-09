@@ -2,6 +2,18 @@
 
 본 프로젝트는 KAIST CS330 운영체제 과목의 Pintos Project 2로, 사용자 프로그램 실행을 위한 핵심 기능들을 구현한 결과물입니다.
 
+공식 문서: [https://casys-kaist.github.io/pintos-kaist/project1/introduction.html](https://casys-kaist.github.io/pintos-kaist/project1/introduction.html)
+
+## 📎 관련 프로젝트
+본 프로젝트는 KAIST Pintos 시리즈 중 **Project 2 (User Program)** 에 해당하며,  
+이전 및 이후 단계 프로젝트는 아래에서 확인할 수 있습니다.
+
+- **Project 1 — Thread**  
+  🔗 https://github.com/kkc1383/Krafton_Jungle_Pintos_Thread_WEEK09_10_Team11  
+
+- **Project 3 — Virtual Memory**  
+  🔗 https://github.com/kkc1383/Krafton_Jungle_Pintos_Virtual_Memory_WEEK12_13_Team12  
+
 ## 프로젝트 개요
 
 Pintos 운영체제에서 사용자 프로그램이 안전하게 실행될 수 있도록 프로세스 관리, 시스템 콜, 메모리 보호 등의 핵심 기능을 구현했습니다. 모든 구현은 x86-64 아키텍처를 기반으로 하며, QEMU 에뮬레이터 환경에서 동작합니다.
@@ -510,3 +522,4 @@ void thread_exit(void) {
 
 - [KAIST Pintos 공식 문서](https://casys-kaist.github.io/pintos-kaist/)
 - [Project 2: User Programs](https://casys-kaist.github.io/pintos-kaist/project1/introduction.html)
+
