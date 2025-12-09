@@ -9,10 +9,10 @@
 이전 및 이후 단계 프로젝트는 아래에서 확인할 수 있습니다.
 
 - **Project 1 — Thread**  
-  🔗 https://github.com/kkc1383/Krafton_Jungle_Pintos_Thread_WEEK09_10_Team11  
+  🔗 [https://github.com/kkc1383/Krafton_Jungle_Pintos_Thread_WEEK09_10_Team11  ](https://github.com/kkc1383/Krafton_Jungle_10th_Pintos_Thread_WEEK09_Team05)
 
 - **Project 3 — Virtual Memory**  
-  🔗 https://github.com/kkc1383/Krafton_Jungle_Pintos_Virtual_Memory_WEEK12_13_Team12  
+  🔗 [https://github.com/kkc1383/Krafton_Jungle_Pintos_Virtual_Memory_WEEK12_13_Team12  ](https://github.com/kkc1383/Krafton_Jungle_Pintos_Virtual_Memory_WEEK12_13_Team12)
 
 ## 프로젝트 개요
 
@@ -522,5 +522,6 @@ void thread_exit(void) {
 
 - [KAIST Pintos 공식 문서](https://casys-kaist.github.io/pintos-kaist/)
 - [Project 2: User Programs](https://casys-kaist.github.io/pintos-kaist/project1/introduction.html)
+
 
 
